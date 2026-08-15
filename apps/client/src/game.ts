@@ -168,7 +168,12 @@ export class SplitGame {
     }
     for (const particle of this.particles) {
       const alpha = Math.max(0, particle.life / particle.maxLife);
-      this.scene.circle(sx(particle.x), sy(particle.y), GAME_CONFIG.fragmentRadius * zoom).fill({ color: particle.color, alpha });
+      const x = sx(particle.x), y = sy(particle.y);
+      const tailX = sx(particle.x - particle.vx * 0.045), tailY = sy(particle.y - particle.vy * 0.045);
+      // Fragments read as moving sparks, not food that suddenly appeared.
+      this.scene.moveTo(tailX, tailY).lineTo(x, y).stroke({ color: particle.color, alpha: alpha * 0.42, width: Math.max(1.5, 3 * zoom) });
+      this.scene.circle(x, y, Math.max(2, GAME_CONFIG.fragmentRadius * zoom * 0.72)).fill({ color: particle.color, alpha });
+      this.scene.circle(x, y, Math.max(3, GAME_CONFIG.fragmentRadius * zoom)).stroke({ color: 0xffffff, alpha: alpha * 0.35, width: 1 });
     }
     for (const ring of this.rings) {
       const progress = 1 - ring.life / ring.maxLife;
@@ -232,8 +237,10 @@ export class SplitGame {
       visual.seen = true; visual.targetAlpha = 1;
     }
     for (const [id, food] of this.visualFood) {
-      // Food enters and leaves over ~120 ms instead of flashing for one frame.
-      food.alpha += (food.targetAlpha - food.alpha) * blend(food.targetAlpha ? 16 : 20);
+      // Arena replenishment is continuous. A slower frame-rate-independent
+      // envelope makes those real lifecycle changes feel organic instead of
+      // looking like one-frame network flicker.
+      food.alpha += (food.targetAlpha - food.alpha) * blend(food.targetAlpha ? 4.5 : 7);
       if (!food.seen && food.alpha < 0.01) this.visualFood.delete(id);
     }
 
