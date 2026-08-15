@@ -10,9 +10,14 @@ export interface WirePrime {
   id: number; clusterId: number; x: number; y: number; radius: number;
   charge: number; armed: boolean; fuse: number; cooldown: number;
 }
+export interface WireAftershock {
+  id: number; primeId: number; x: number; y: number; radius: number;
+  timeRemaining: number; duration: number;
+}
 export interface ArenaWireState {
   tick: number; configVersion: string; seed: number;
   blobs: Map<string, WireBlob>;
   food: WireFood[];
   primes: WirePrime[];
+  aftershocks: WireAftershock[];
 }

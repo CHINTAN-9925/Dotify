@@ -19,6 +19,17 @@ function armPrime(world: SimulationWorld, primeIndex = 0) {
   return { prime, player };
 }
 
+function detonatePrime(world: SimulationWorld) {
+  const { prime, player } = armPrime(world);
+  world.drainEvents();
+  world.food.clear();
+  world.applyInput('p1', { protocolVersion: PROTOCOL_VERSION, sequence: 1, directionX: 0, directionY: 0, burstPressed: true });
+  world.step();
+  const event = world.drainEvents().find(candidate => candidate.type === 'primeDetonated');
+  if (!event || event.type !== 'primeDetonated') throw new Error('prime did not detonate');
+  return { prime, player, event };
+}
+
 describe('authoritative simulation', () => {
   it('generates repeatable random sequences', () => {
     const a = new SeededRandom(42), b = new SeededRandom(42);
@@ -136,5 +147,42 @@ describe('authoritative simulation', () => {
     const events = world.drainEvents();
     expect(events.some(event => event.type === 'burst' && event.ownerId === bot.id)).toBe(true);
     expect(events.some(event => event.type === 'primeDetonated' && event.ownerId === bot.id)).toBe(true);
+  });
+
+  it('creates a shrinking Aftershock that doubles food mass', () => {
+    const world = new SimulationWorld(47);
+    const { player } = detonatePrime(world);
+    const zone = world.aftershocks[0];
+    if (!zone) throw new Error('missing Aftershock');
+    expect(zone.radius).toBe(world.config.aftershockStartRadius);
+    world.food.clear();
+    const massBefore = player.mass;
+    world.food.set(200_000, {
+      id: 200_000, clusterId: 0, x: player.x, y: player.y,
+      radius: world.config.foodRadius, mass: world.config.foodMass, color: '#fff'
+    });
+    world.step();
+    expect(player.mass - massBefore).toBeCloseTo(world.config.foodMass * world.config.aftershockMassMultiplier);
+    expect(zone.radius).toBeLessThan(world.config.aftershockStartRadius);
+  });
+
+  it('counts fragment chain hits twice inside an Aftershock and expires the zone', () => {
+    const world = new SimulationWorld(53);
+    const { player, event } = detonatePrime(world);
+    world.food.clear();
+    const eventRng = new SeededRandom(event.seed);
+    const angle = eventRng.range(0, Math.PI * 2);
+    const travel = world.config.fragmentSpeed / world.config.tickRate;
+    const foodX = event.x + Math.cos(angle) * travel;
+    const foodY = event.y + Math.sin(angle) * travel;
+    world.food.set(200_001, {
+      id: 200_001, clusterId: 0, x: foodX, y: foodY,
+      radius: world.config.foodRadius, mass: world.config.foodMass, color: '#fff'
+    });
+    const chainBefore = player.chain;
+    world.step();
+    expect(player.chain - chainBefore).toBe(world.config.aftershockChainMultiplier);
+    for (let i = 0; i < world.config.aftershockDurationSeconds * world.config.tickRate + 2; i++) world.step();
+    expect(world.aftershocks).toHaveLength(0);
   });
 });

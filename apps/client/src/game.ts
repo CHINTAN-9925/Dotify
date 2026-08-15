@@ -2,7 +2,7 @@ import { Application, Container, Graphics, Text, TextStyle } from 'pixi.js';
 import { GAME_CONFIG, PROTOCOL_VERSION } from '@split/config';
 import type { GameEvent, PlayerInput } from '@split/protocol';
 import { GameConnection } from './network';
-import type { WireBlob, WireFood, WirePrime } from './types';
+import type { WireAftershock, WireBlob, WireFood, WirePrime } from './types';
 
 interface VisualParticle {
   x: number; y: number; vx: number; vy: number; life: number; maxLife: number; color: string;
@@ -20,11 +20,15 @@ interface VisualPrime {
   source: WirePrime; x: number; y: number; alpha: number; seen: boolean;
 }
 
+interface VisualAftershock {
+  source: WireAftershock; x: number; y: number; radius: number; targetRadius: number; alpha: number; seen: boolean;
+}
+
 interface VisualRing {
   x: number; y: number; life: number; maxLife: number; startRadius: number; endRadius: number; color: string;
 }
 
-export interface HudSnapshot { mass: number; chain: number; bestChain: number; cooldown: number; status: string; banner: string }
+export interface HudSnapshot { mass: number; chain: number; bestChain: number; cooldown: number; status: string; banner: string; aftershock: number }
 
 export class SplitGame {
   private readonly app = new Application();
@@ -36,6 +40,7 @@ export class SplitGame {
   private readonly visualBlobs = new Map<string, VisualBlob>();
   private readonly visualFood = new Map<number, VisualFood>();
   private readonly visualPrimes = new Map<number, VisualPrime>();
+  private readonly visualAftershocks = new Map<number, VisualAftershock>();
   private readonly blobLabels = new Map<string, Text>();
   private readonly primeLabels = new Map<number, Text>();
   private readonly rings: VisualRing[] = [];
@@ -71,7 +76,14 @@ export class SplitGame {
   hud(): HudSnapshot {
     const player = this.player();
     if (player) this.bestChain = Math.max(this.bestChain, player.chain);
-    return { mass: player?.mass ?? 0, chain: player?.chain ?? 0, bestChain: this.bestChain, cooldown: player?.cooldown ?? 0, status: this.status, banner: this.bannerLife > 0 ? this.banner : '' };
+    const state = this.connection.room?.state;
+    let aftershock = 0;
+    if (player && state?.aftershocks) {
+      for (const zone of state.aftershocks as unknown as Iterable<WireAftershock>) {
+        if ((zone.x - player.x) ** 2 + (zone.y - player.y) ** 2 <= zone.radius ** 2) aftershock = Math.max(aftershock, zone.timeRemaining);
+      }
+    }
+    return { mass: player?.mass ?? 0, chain: player?.chain ?? 0, bestChain: this.bestChain, cooldown: player?.cooldown ?? 0, status: this.status, banner: this.bannerLife > 0 ? this.banner : '', aftershock };
   }
 
   private frame(dt: number): void {
@@ -117,6 +129,13 @@ export class SplitGame {
     for (const label of this.blobLabels.values()) label.visible = false;
     for (const label of this.primeLabels.values()) label.visible = false;
 
+    for (const zone of this.visualAftershocks.values()) {
+      if (zone.alpha <= 0.01) continue;
+      const x = sx(zone.x), y = sy(zone.y), radius = zone.radius * zoom;
+      this.scene.circle(x, y, radius).fill({ color: GAME_CONFIG.aftershockColor, alpha: zone.alpha * 0.055 });
+      this.scene.circle(x, y, radius).stroke({ color: GAME_CONFIG.aftershockColor, alpha: zone.alpha * 0.72, width: Math.max(2, 4 * zoom) });
+      this.scene.circle(x, y, Math.max(0, radius - 8 * zoom)).stroke({ color: 0xffffff, alpha: zone.alpha * 0.11, width: 1 });
+    }
     this.scene.rect(sx(0), sy(0), GAME_CONFIG.worldSize * zoom, GAME_CONFIG.worldSize * zoom).stroke({ color: 0xffffff, alpha: 0.12, width: 2 });
     for (const food of this.visualFood.values()) {
       const x = sx(food.x), y = sy(food.y);
@@ -188,6 +207,11 @@ export class SplitGame {
     const left = 18, top = height - size - 18;
     this.scene.roundRect(left, top, size, size, 10).fill({ color: 0x08080d, alpha: 0.72 }).stroke({ color: 0xffffff, alpha: 0.16, width: 1 });
     const point = (value: number) => value / GAME_CONFIG.worldSize * (size - 14) + 7;
+    for (const zone of this.visualAftershocks.values()) {
+      if (zone.alpha <= 0.05) continue;
+      const radius = zone.radius / GAME_CONFIG.worldSize * (size - 14);
+      this.scene.circle(left + point(zone.x), top + point(zone.y), radius).fill({ color: GAME_CONFIG.aftershockColor, alpha: zone.alpha * 0.12 }).stroke({ color: GAME_CONFIG.aftershockColor, alpha: zone.alpha * 0.65, width: 1 });
+    }
     for (const prime of this.visualPrimes.values()) {
       if (prime.alpha <= 0.05) continue;
       this.scene.circle(left + point(prime.x), top + point(prime.y), prime.source.armed ? 4.5 : 3.5).fill({ color: prime.source.armed ? 0xff6b4a : GAME_CONFIG.primeColor, alpha: prime.alpha });
@@ -199,7 +223,7 @@ export class SplitGame {
     const state = this.connection.room?.state;
     // Colyseus assigns the state object before its schema collections finish
     // decoding. A fast first render must wait for that initial patch.
-    if (!state?.blobs || !state.food || !state.primes) return;
+    if (!state?.blobs || !state.food || !state.primes || !state.aftershocks) return;
     const blend = (rate: number) => 1 - Math.exp(-rate * dt);
 
     for (const visual of this.visualBlobs.values()) visual.seen = false;
@@ -265,6 +289,22 @@ export class SplitGame {
         if (label) { label.destroy(); this.primeLabels.delete(id); }
       }
     }
+
+    for (const zone of this.visualAftershocks.values()) zone.seen = false;
+    for (const zone of state.aftershocks as unknown as Iterable<WireAftershock>) {
+      let visual = this.visualAftershocks.get(zone.id);
+      if (!visual) {
+        visual = { source: zone, x: zone.x, y: zone.y, radius: zone.radius, targetRadius: zone.radius, alpha: 0, seen: true };
+        this.visualAftershocks.set(zone.id, visual);
+      }
+      visual.source = zone; visual.x = zone.x; visual.y = zone.y;
+      visual.targetRadius = zone.radius; visual.seen = true;
+    }
+    for (const [id, zone] of this.visualAftershocks) {
+      zone.radius += (zone.targetRadius - zone.radius) * blend(12);
+      zone.alpha += ((zone.seen ? 1 : 0) - zone.alpha) * blend(zone.seen ? 7 : 5);
+      if (!zone.seen && zone.alpha < 0.01) this.visualAftershocks.delete(id);
+    }
   }
 
   private updateParticles(dt: number): void {
@@ -306,7 +346,7 @@ export class SplitGame {
   }
 
   private player(): WireBlob | undefined {
-    return this.connection.room?.state.blobs.get(this.connection.playerId);
+    return this.connection.room?.state.blobs?.get(this.connection.playerId);
   }
 
   private installInput(canvas: HTMLCanvasElement): void {

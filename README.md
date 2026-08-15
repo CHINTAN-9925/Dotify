@@ -50,8 +50,9 @@ Three gold Prime Cores occupy food-cluster centers and create shared objectives 
 - The first fragment to touch it claims a 24-fragment gold detonation and gains `+3` chain.
 - An unclaimed Prime erupts neutrally when its fuse expires.
 - The spent core fades out for 12 seconds, then relocates to a different unoccupied cluster.
+- Every detonation leaves a shrinking 10-second Aftershock Zone where food grants 2× mass and chain hits count 2×.
 
-Charge arcs, armed countdowns, warning rings, a minimap, shockwaves, camera kick, and event banners make the objective readable without changing the server-authoritative rules.
+Charge arcs, armed countdowns, warning rings, Aftershock boundaries, minimap coverage, camera kick, and event banners make the objective readable without changing the server-authoritative rules.
 
 ## Mobile
 

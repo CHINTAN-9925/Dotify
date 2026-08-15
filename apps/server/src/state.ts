@@ -1,5 +1,5 @@
 import { ArraySchema, MapSchema, Schema, type } from '@colyseus/schema';
-import type { Blob, Food, PrimeCore, SimulationWorld } from '@split/simulation';
+import type { AftershockZone, Blob, Food, PrimeCore, SimulationWorld } from '@split/simulation';
 
 export class BlobSchema extends Schema {
   @type('string') id = '';
@@ -39,6 +39,16 @@ export class PrimeSchema extends Schema {
   @type('number') cooldown = 0;
 }
 
+export class AftershockSchema extends Schema {
+  @type('uint32') id = 0;
+  @type('uint8') primeId = 0;
+  @type('number') x = 0;
+  @type('number') y = 0;
+  @type('number') radius = 0;
+  @type('number') timeRemaining = 0;
+  @type('number') duration = 0;
+}
+
 export class ArenaState extends Schema {
   @type('uint32') tick = 0;
   @type('string') configVersion = '';
@@ -46,6 +56,7 @@ export class ArenaState extends Schema {
   @type({ map: BlobSchema }) blobs = new MapSchema<BlobSchema>();
   @type([FoodSchema]) food = new ArraySchema<FoodSchema>();
   @type([PrimeSchema]) primes = new ArraySchema<PrimeSchema>();
+  @type([AftershockSchema]) aftershocks = new ArraySchema<AftershockSchema>();
 }
 
 function copyBlob(source: Blob, target: BlobSchema): void {
@@ -83,6 +94,18 @@ export function syncState(world: SimulationWorld, state: ArenaState): void {
     const target = state.primes[index];
     if (target) copyPrime(prime, target);
   });
+
+  const knownAftershocks = new Map<number, AftershockSchema>();
+  for (const zone of state.aftershocks) knownAftershocks.set(zone.id, zone);
+  for (let i = state.aftershocks.length - 1; i >= 0; i--) {
+    const zone = state.aftershocks[i];
+    if (zone && !world.aftershocks.some(candidate => candidate.id === zone.id)) state.aftershocks.splice(i, 1);
+  }
+  for (const zone of world.aftershocks) {
+    let target = knownAftershocks.get(zone.id);
+    if (!target) { target = new AftershockSchema(); state.aftershocks.push(target); }
+    copyAftershock(zone, target);
+  }
 }
 
 function toFoodSchema(food: Food): FoodSchema {
@@ -96,4 +119,10 @@ function copyPrime(source: PrimeCore, target: PrimeSchema): void {
   target.x = source.x; target.y = source.y; target.radius = source.radius;
   target.charge = source.charge; target.armed = source.armed;
   target.fuse = source.fuse; target.cooldown = source.cooldown;
+}
+
+function copyAftershock(source: AftershockZone, target: AftershockSchema): void {
+  target.id = source.id; target.primeId = source.primeId;
+  target.x = source.x; target.y = source.y; target.radius = source.radius;
+  target.timeRemaining = source.timeRemaining; target.duration = source.duration;
 }

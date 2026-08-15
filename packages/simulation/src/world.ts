@@ -27,6 +27,11 @@ export interface PrimeCore {
   charge: number; armed: boolean; fuse: number; cooldown: number;
 }
 
+export interface AftershockZone {
+  id: number; primeId: number; x: number; y: number; radius: number;
+  timeRemaining: number; duration: number;
+}
+
 interface Fragment {
   id: number; x: number; y: number; vx: number; vy: number;
   radius: number; life: number; maxLife: number; speed: number;
@@ -38,6 +43,7 @@ export interface WorldSnapshot {
   blobs: readonly Blob[];
   food: readonly Food[];
   primes: readonly PrimeCore[];
+  aftershocks: readonly AftershockZone[];
   fragmentCount: number;
 }
 
@@ -48,6 +54,7 @@ export class SimulationWorld {
   readonly food = new Map<number, Food>();
   readonly clusters: FoodCluster[] = [];
   readonly primes: PrimeCore[] = [];
+  readonly aftershocks: AftershockZone[] = [];
   readonly events: GameEvent[] = [];
   readonly seed: number;
   tick = 0;
@@ -110,6 +117,7 @@ export class SimulationWorld {
   step(): void {
     const dt = 1 / this.config.tickRate;
     this.tick++;
+    this.updateAftershocks(dt);
     this.updateBlobs(dt);
     this.rebuildSpatialIndexes();
     this.consumeFood();
@@ -119,7 +127,7 @@ export class SimulationWorld {
   }
 
   snapshot(): WorldSnapshot {
-    return { tick: this.tick, blobs: [...this.blobs.values()], food: [...this.food.values()], primes: this.primes, fragmentCount: this.fragments.length };
+    return { tick: this.tick, blobs: [...this.blobs.values()], food: [...this.food.values()], primes: this.primes, aftershocks: this.aftershocks, fragmentCount: this.fragments.length };
   }
 
   private makeBlob(id: string, kind: Blob['kind'], name: string, color: string): Blob {
@@ -272,7 +280,7 @@ export class SimulationWorld {
         if (!this.food.has(food.id)) continue;
         const dx = blob.x - food.x, dy = blob.y - food.y;
         if (dx * dx + dy * dy < blob.radius * blob.radius) {
-          blob.mass += food.mass;
+          blob.mass += food.mass * this.massMultiplierAt(food.x, food.y);
           this.food.delete(food.id);
           this.chargePrime(food.clusterId);
         }
@@ -344,6 +352,12 @@ export class SimulationWorld {
       color: this.config.primeColor, seed, count: this.config.primeFragments,
       neutral: ownerId === null
     });
+    this.aftershocks.push({
+      id: this.nextEntityId++, primeId: prime.id, x: prime.x, y: prime.y,
+      radius: this.config.aftershockStartRadius,
+      timeRemaining: this.config.aftershockDurationSeconds,
+      duration: this.config.aftershockDurationSeconds
+    });
     this.spawnFragments(
       prime.x, prime.y, this.config.primeFragments, this.config.primeColor,
       this.config.fragmentSpeed, this.config.fragmentLifeSeconds, ownerId ?? '', seed
@@ -361,6 +375,30 @@ export class SimulationWorld {
     prime.clusterId = clusterId;
     prime.x = cluster.x;
     prime.y = cluster.y;
+  }
+
+  private updateAftershocks(dt: number): void {
+    for (let index = this.aftershocks.length - 1; index >= 0; index--) {
+      const zone = this.aftershocks[index];
+      if (!zone) continue;
+      zone.timeRemaining = Math.max(0, zone.timeRemaining - dt);
+      const progress = zone.timeRemaining / zone.duration;
+      zone.radius = this.config.aftershockEndRadius +
+        (this.config.aftershockStartRadius - this.config.aftershockEndRadius) * progress;
+      if (zone.timeRemaining === 0) this.aftershocks.splice(index, 1);
+    }
+  }
+
+  private isInsideAftershock(x: number, y: number): boolean {
+    return this.aftershocks.some(zone => (zone.x - x) ** 2 + (zone.y - y) ** 2 <= zone.radius ** 2);
+  }
+
+  private massMultiplierAt(x: number, y: number): number {
+    return this.isInsideAftershock(x, y) ? this.config.aftershockMassMultiplier : 1;
+  }
+
+  private chainIncrementAt(x: number, y: number): number {
+    return this.isInsideAftershock(x, y) ? this.config.aftershockChainMultiplier : 1;
   }
 
   private spawnFragments(x: number, y: number, count: number, color: string, speed: number, life: number, ownerId: string, seed = this.rng.integer(0, 0x7fffffff)): void {
@@ -398,7 +436,10 @@ export class SimulationWorld {
         this.food.delete(food.id);
         this.chargePrime(food.clusterId);
         const owner = this.blobs.get(fragment.ownerId);
-        if (owner && !owner.dead) { owner.mass += food.mass; owner.chain++; }
+        if (owner && !owner.dead) {
+          owner.mass += food.mass * this.massMultiplierAt(food.x, food.y);
+          owner.chain += this.chainIncrementAt(food.x, food.y);
+        }
         const seed = this.rng.integer(0, 0x7fffffff);
         this.events.push({ type: 'foodPopped', id: this.nextEventId++, tick: this.tick, ownerId: fragment.ownerId, foodId: food.id, x: food.x, y: food.y, color: food.color, seed });
         this.spawnFragments(food.x, food.y, this.config.fragmentFromFood, food.color, fragment.speed * this.config.chainSpeedDecay, fragment.maxLife * this.config.chainLifeDecay, fragment.ownerId, seed);
@@ -426,7 +467,10 @@ export class SimulationWorld {
           const seed = this.rng.integer(0, 0x7fffffff);
           this.events.push({ type: 'blobShattered', id: this.nextEventId++, tick: this.tick, ownerId: fragment.ownerId, targetId: blob.id, x: blob.x, y: blob.y, color: blob.color, seed });
           const owner = this.blobs.get(fragment.ownerId);
-          if (owner && !owner.dead) { owner.mass += blob.mass * this.config.shatterYield; owner.chain++; }
+          if (owner && !owner.dead) {
+            owner.mass += blob.mass * this.config.shatterYield;
+            owner.chain += this.chainIncrementAt(blob.x, blob.y);
+          }
           this.kill(blob, 'shattered', fragment.ownerId);
           this.spawnFragments(blob.x, blob.y, this.config.fragmentFromBlob, blob.color, this.config.fragmentSpeed, this.config.fragmentLifeSeconds, fragment.ownerId, seed);
         }

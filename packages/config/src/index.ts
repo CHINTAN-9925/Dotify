@@ -1,5 +1,5 @@
-export const PROTOCOL_VERSION = 2;
-export const CONFIG_VERSION = '2026.08.2';
+export const PROTOCOL_VERSION = 3;
+export const CONFIG_VERSION = '2026.08.3';
 
 /** All authoritative values use seconds and world pixels, never render frames. */
 export const GAME_CONFIG = Object.freeze({
@@ -21,6 +21,11 @@ export const GAME_CONFIG = Object.freeze({
   primeCooldownSeconds: 12,
   primeFragments: 24,
   primeChainBonus: 3,
+  aftershockDurationSeconds: 10,
+  aftershockStartRadius: 340,
+  aftershockEndRadius: 90,
+  aftershockMassMultiplier: 2,
+  aftershockChainMultiplier: 2,
   startMass: 24,
   massToRadius: 2.4,
   baseSpeed: 216,
@@ -46,6 +51,7 @@ export const GAME_CONFIG = Object.freeze({
   palette: ['#ff3b6b', '#ffb028', '#3ddc84', '#31c4ff', '#b06bff', '#ff6bd6'] as readonly string[],
   playerColor: '#ffffff',
   primeColor: '#ffd83b',
+  aftershockColor: '#ff9f3b',
   background: '#0d0d12'
 });
 

@@ -10,6 +10,8 @@ canvas { display: block; touch-action: none; }
 .chain { position: absolute; top: max(18px, env(safe-area-inset-top)); left: 50%; transform: translateX(-50%); display: flex; flex-direction: column; align-items: center; }
 .chain strong { font-size: 52px; line-height: 1; }
 .banner { position: absolute; top: 20%; left: 50%; transform: translateX(-50%); color: #ffe77a; font-size: clamp(24px, 5vw, 54px); font-weight: 900; letter-spacing: .08em; text-shadow: 0 0 22px rgba(255,216,59,.7); animation: prime-banner .32s ease-out; white-space: nowrap; }
+.aftershock { position: absolute; left: 50%; bottom: max(28px, env(safe-area-inset-bottom)); transform: translateX(-50%); display: flex; gap: 10px; align-items: center; padding: 9px 15px; border: 1px solid rgba(255,159,59,.75); border-radius: 999px; color: #ffbd72; background: rgba(22,12,5,.78); box-shadow: 0 0 22px rgba(255,159,59,.16); font-size: 13px; letter-spacing: .06em; }
+.aftershock span { color: rgba(255,255,255,.65); font-variant-numeric: tabular-nums; }
 @keyframes prime-banner { from { opacity: 0; transform: translateX(-50%) scale(.72); } to { opacity: 1; transform: translateX(-50%) scale(1); } }
 .status { position: absolute; right: 20px; top: max(20px, env(safe-area-inset-top)); color: #ff6b86; font-size: 12px; }
 .status.online { color: #3ddc84; }
