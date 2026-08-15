@@ -192,7 +192,9 @@ export class SplitGame {
 
   private syncVisualState(dt: number): void {
     const state = this.connection.room?.state;
-    if (!state) return;
+    // Colyseus assigns the state object before its schema collections finish
+    // decoding. A fast first render must wait for that initial patch.
+    if (!state?.blobs || !state.food || !state.primes) return;
     const blend = (rate: number) => 1 - Math.exp(-rate * dt);
 
     for (const visual of this.visualBlobs.values()) visual.seen = false;
