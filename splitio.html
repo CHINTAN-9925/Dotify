@@ -1,0 +1,1658 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Split.io</title>
+<style>
+  html, body {
+    margin: 0; padding: 0; height: 100%; overflow: hidden;
+    background: #0d0d12;
+    -webkit-tap-highlight-color: transparent;
+    font-family: system-ui, -apple-system, sans-serif;
+  }
+  canvas { display: block; touch-action: none; cursor: none; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+(function () {
+  'use strict';
+
+  // ===========================================================================
+  // CONFIG — every tunable number. Tune the feel by editing this block.
+  // ===========================================================================
+  const CONFIG = {
+    // --- world ---
+    worldSize: 3200,
+    foodCount: 520,
+    foodRadius: 6,
+    foodMass: 1.2,
+    foodRespawnPerFrame: 0.7,
+    clusterCount: 22,
+    clusterRadius: 260,
+
+    // --- player / bots ---
+    startMass: 24,
+    massToRadius: 2.4,
+    baseSpeed: 3.6,
+    speedFalloff: 0.35,
+    eatRatio: 1.15,
+    botCount: 26,
+    botDetectRange: 620,
+    botMaxMass: 900,
+    decayAbove: 600,
+    decayRate: 0.00035,
+
+    // --- the burst ---
+    burstCost: 0.12,
+    burstMinMass: 30,
+    burstCooldown: 300,
+    burstFragments: 10,
+    fragmentRadius: 5,
+    fragmentSpeed: 9,
+    fragmentLife: 70,
+    fragmentFadeFrames: 22,
+    fragmentTrailLength: 5,
+    fragmentCap: 900,
+
+    // --- the chain ---
+    chainFromFood: 1,
+    chainFromBot: 3,
+    chainLifeDecay: 0.80,
+    chainSpeedDecay: 0.96,
+
+    // --- DURABILITY: nothing is immune, size only buys you more hits ----------
+    // A fragment cracks whatever it touches. Small blobs pop in one or two
+    // hits; the leader takes a sustained chain to bring down. This is what
+    // makes a lucky burst from the far corner able to topple a giant, and it
+    // cuts both ways — you are just as crackable once you are on top.
+    crackPerRoot: 3,           // hits to shatter = 1 + floor(sqrt(mass) / this)
+    crackMax: 12,              // ...capped here, so nothing is ever unkillable
+    crackReset: 90,            // frames without a hit before damage heals off
+    shatterYield: 0.7,         // fraction of a shattered blob's mass paid out
+
+    // --- BOTS BURST TOO -------------------------------------------------------
+    // The arena is no longer quiet between your bursts. Bots detonate at blobs
+    // that outweigh them, near prime nodes, and occasionally at random — so
+    // chains arrive from off screen and the whole board is live.
+    botBurstCooldown: 1000,
+    botBurstJitter: 500,
+    botBurstFragments: 8,
+    botBurstRange: 420,        // burst at anything bigger than it within this
+    botBurstChance: 0.0015,    // idle random detonation, per frame, when ready
+
+    // --- reward: the burst pays for itself ------------------------------------
+    refundPerPop: 2.5,
+    refundDecay: 0.985,
+    refundCapFraction: 0.5,
+
+    // --- reward: chains escalate ----------------------------------------------
+    chainTiers: [
+      { at: 10,  mult: 1.5, label: 'NICE' },
+      { at: 25,  mult: 2.0, label: 'BIG' },
+      { at: 50,  mult: 3.0, label: 'HUGE' },
+      { at: 100, mult: 3.5, label: 'ABSURD' }
+    ],
+
+    // --- feel -----------------------------------------------------------------
+    slowMoStart: 20,
+    slowMoEnd: 40,
+    slowMoScale: 0.45,
+    hitStopFrames: 3,
+    hitStopScale: 0.08,
+    shakePerPop: 0.9,
+    shakeDecay: 0.88,
+    shakeMax: 26,
+    ringLife: 16,
+    ringGrowth: 3.2,
+
+    // --- prime nodes ----------------------------------------------------------
+    primeCount: 3,
+    primeRadius: 26,
+    primeMass: 40,
+    primeFragments: 24,
+    primeRespawn: 900,
+    primeFuse: 1500,           // a live prime eventually goes off by itself
+
+    // --- harvest orbs ---------------------------------------------------------
+    orbHomingAccel: 0.55,
+    orbMaxSpeed: 16,
+    orbLife: 420,
+    botShatterOrbs: 8,
+
+    // --- tension --------------------------------------------------------------
+    hunterCount: 2,
+    respawnDelay: 70,
+    spawnGrace: 120,           // frames of immunity after dropping back in
+
+    // --- audio: entirely procedural, no asset files -------------------------
+    // The chain is a rising scale. Each link in your own chain steps one
+    // semitone up from the last, capping after two octaves, so a long cascade
+    // is an audible run you hear building before you see it resolve.
+    masterVolume: 0.35,
+    maxVoicesPerFrame: 5,      // hard cap, or a 100-link chain would clip
+    popBaseFreq: 261.6,        // C4
+    popSemitoneCap: 24,        // two octaves, then it stops climbing
+    audioRange: 1000,          // world px past which a pop is inaudible
+
+    palette: ['#ff3b6b', '#ffb028', '#3ddc84', '#31c4ff', '#b06bff', '#ff6bd6'],
+    playerColor: '#ffffff',
+    primeColor: '#ffd83b',
+    background: '#0d0d12',
+    gridColor: 'rgba(255,255,255,0.035)',
+    gridStep: 100
+  };
+
+  // ===========================================================================
+  // Utilities
+  // ===========================================================================
+  const rand = (a, b) => a + Math.random() * (b - a);
+  const clamp = (v, lo, hi) => v < lo ? lo : (v > hi ? hi : v);
+  const pick = (arr) => arr[(Math.random() * arr.length) | 0];
+  const radiusOf = (mass) => Math.sqrt(mass) * CONFIG.massToRadius;
+  const speedOf = (mass) =>
+    CONFIG.baseSpeed * Math.pow(CONFIG.startMass / mass, CONFIG.speedFalloff);
+
+  const BOT_NAMES = ['orbit','vex','nova','kilo','pico','drift','echo','hex','flux','zed',
+                     'nyx','apex','loop','byte','crux','onyx','wisp','volt','rune','halo',
+                     'jinx','koi','mote','pulse','quill','sable'];
+
+  // ===========================================================================
+  // Canvas
+  // ===========================================================================
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d');
+  let viewW = 0, viewH = 0, dpr = 1;
+
+  function resize() {
+    dpr = window.devicePixelRatio || 1;
+    viewW = window.innerWidth;
+    viewH = window.innerHeight;
+    canvas.style.width = viewW + 'px';
+    canvas.style.height = viewH + 'px';
+    canvas.width = Math.round(viewW * dpr);
+    canvas.height = Math.round(viewH * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+
+  // ===========================================================================
+  // Entities
+  // ===========================================================================
+  class Food {
+    constructor(x, y) {
+      this.x = x; this.y = y;
+      this.radius = CONFIG.foodRadius;
+      this.mass = CONFIG.foodMass;
+      this.color = pick(CONFIG.palette);
+      this.phase = Math.random() * Math.PI * 2;
+    }
+    update(ts) {
+      this.phase += 0.02 * ts;
+      this.x += Math.cos(this.phase) * 0.12 * ts;
+      this.y += Math.sin(this.phase * 0.8) * 0.12 * ts;
+    }
+  }
+
+  class Prime {
+    constructor(x, y) {
+      this.x = x; this.y = y;
+      this.radius = CONFIG.primeRadius;
+      this.mass = CONFIG.primeMass;
+      this.color = CONFIG.primeColor;
+      this.phase = Math.random() * Math.PI * 2;
+      this.cooldown = 0;
+      this.fuse = rand(CONFIG.primeFuse * 0.6, CONFIG.primeFuse * 1.4);
+    }
+    get live() { return this.cooldown <= 0; }
+    update(ts) {
+      this.phase += 0.05 * ts;
+      if (this.cooldown > 0) {
+        this.cooldown -= ts;
+        if (this.cooldown <= 0) this.relocate();
+      } else {
+        this.fuse -= ts;
+      }
+    }
+    relocate() {
+      this.x = rand(200, CONFIG.worldSize - 200);
+      this.y = rand(200, CONFIG.worldSize - 200);
+      this.fuse = rand(CONFIG.primeFuse * 0.6, CONFIG.primeFuse * 1.4);
+    }
+    consume() { this.cooldown = CONFIG.primeRespawn; }
+    get drawRadius() { return this.radius + Math.sin(this.phase) * 3; }
+    // flashes faster as it is about to blow on its own
+    get urgency() { return clamp(1 - this.fuse / (CONFIG.primeFuse * 0.35), 0, 1); }
+  }
+
+  class Blob {
+    constructor(x, y, mass, color) {
+      this.x = x; this.y = y;
+      this.mass = mass;
+      this.color = color;
+      this.vx = 0; this.vy = 0;
+      this.dead = false;
+      this.cracks = 0;
+      this.crackTimer = 0;
+    }
+    get radius() { return radiusOf(this.mass); }
+
+    // Bigger blobs take more fragment hits — but never an unlimited number.
+    get hitsToPop() {
+      return clamp(1 + Math.floor(Math.sqrt(this.mass) / CONFIG.crackPerRoot), 1, CONFIG.crackMax);
+    }
+    get integrity() { return 1 - this.cracks / this.hitsToPop; }
+
+    move(dirX, dirY, ts) {
+      const speed = speedOf(this.mass);
+      const len = Math.hypot(dirX, dirY);
+      if (len > 0.001) {
+        const tx = (dirX / len) * speed, ty = (dirY / len) * speed;
+        this.vx += (tx - this.vx) * 0.18 * ts;
+        this.vy += (ty - this.vy) * 0.18 * ts;
+      } else {
+        this.vx *= Math.pow(0.9, ts); this.vy *= Math.pow(0.9, ts);
+      }
+      this.x += this.vx * ts;
+      this.y += this.vy * ts;
+      const r = this.radius;
+      this.x = clamp(this.x, r, CONFIG.worldSize - r);
+      this.y = clamp(this.y, r, CONFIG.worldSize - r);
+    }
+
+    tickCracks(ts) {
+      if (this.cracks > 0) {
+        this.crackTimer -= ts;
+        if (this.crackTimer <= 0) this.cracks = 0;
+      }
+    }
+
+    canEat(other) { return this.mass > other.mass * CONFIG.eatRatio; }
+    overlaps(other) {
+      const dx = this.x - other.x, dy = this.y - other.y;
+      const reach = this.radius - other.radius * 0.4;
+      return dx * dx + dy * dy < reach * reach;
+    }
+  }
+
+  class Player extends Blob {
+    constructor() {
+      super(CONFIG.worldSize / 2, CONFIG.worldSize / 2, CONFIG.startMass, CONFIG.playerColor);
+      this.name = 'you';
+      this.cooldown = 0;
+      this.peak = CONFIG.startMass;
+      this.chain = 0; this.lastChain = 0;
+      this.chainRefund = 0; this.tier = 0;
+      this.kills = 0;
+      this.grace = CONFIG.spawnGrace;
+    }
+    get safe() { return this.grace > 0; }
+    get burstReady() {
+      return this.cooldown <= 0 && this.mass >= CONFIG.burstMinMass && !this.dead;
+    }
+    get multiplier() { return this.tier > 0 ? CONFIG.chainTiers[this.tier - 1].mult : 1; }
+  }
+
+  class Bot extends Blob {
+    constructor(x, y, mass) {
+      super(x, y, mass, pick(CONFIG.palette));
+      this.name = pick(BOT_NAMES);
+      this.wanderAngle = Math.random() * Math.PI * 2;
+      this.hunter = false;
+      this.cooldown = rand(0, CONFIG.botBurstCooldown);
+    }
+
+    get burstReady() {
+      return this.cooldown <= 0 && this.mass >= CONFIG.burstMinMass && !this.dead;
+    }
+
+    think(world) {
+      const player = world.player;
+
+      if (this.hunter && !player.dead && this.canEat(player)) {
+        return [player.x - this.x, player.y - this.y];
+      }
+
+      let threat = null, threatDistSq = Infinity;
+      let prey = null, preyDistSq = Infinity;
+      const rangeSq = CONFIG.botDetectRange * CONFIG.botDetectRange;
+
+      for (let i = 0; i < world.blobs.length; i++) {
+        const other = world.blobs[i];
+        if (other === this || other.dead) continue;
+        const dx = other.x - this.x, dy = other.y - this.y;
+        const dSq = dx * dx + dy * dy;
+        if (dSq > rangeSq) continue;
+        if (other.canEat(this)) {
+          if (dSq < threatDistSq) { threatDistSq = dSq; threat = other; }
+        } else if (this.canEat(other) && dSq < preyDistSq) {
+          preyDistSq = dSq; prey = other;
+        }
+      }
+
+      // Cornered by something bigger? Detonate at it rather than just run.
+      if (threat && this.burstReady && threatDistSq < CONFIG.botBurstRange * CONFIG.botBurstRange) {
+        world.botBurst(this);
+      }
+
+      if (threat) return [this.x - threat.x, this.y - threat.y];
+      if (prey && this.mass < CONFIG.botMaxMass) return [prey.x - this.x, prey.y - this.y];
+
+      let best = null, bestDistSq = rangeSq;
+      for (let i = 0; i < world.primes.length; i++) {
+        const p = world.primes[i];
+        if (!p.live) continue;
+        const dx = p.x - this.x, dy = p.y - this.y;
+        const dSq = dx * dx + dy * dy;
+        if (dSq < bestDistSq) { bestDistSq = dSq; best = p; }
+      }
+      // sitting on a prime node with a charged burst? set it off
+      if (best && this.burstReady && bestDistSq < 200 * 200) world.botBurst(this);
+
+      if (!best) {
+        for (let i = 0; i < world.food.length; i++) {
+          const f = world.food[i];
+          const dx = f.x - this.x, dy = f.y - this.y;
+          const dSq = dx * dx + dy * dy;
+          if (dSq < bestDistSq) { bestDistSq = dSq; best = f; }
+        }
+      }
+
+      // and sometimes, for no reason at all
+      if (this.burstReady && Math.random() < CONFIG.botBurstChance) world.botBurst(this);
+
+      if (best) return [best.x - this.x, best.y - this.y];
+
+      this.wanderAngle += rand(-0.08, 0.08);
+      let wx = Math.cos(this.wanderAngle), wy = Math.sin(this.wanderAngle);
+      const m = CONFIG.worldSize * 0.12;
+      if (this.x < m) wx += 1; else if (this.x > CONFIG.worldSize - m) wx -= 1;
+      if (this.y < m) wy += 1; else if (this.y > CONFIG.worldSize - m) wy -= 1;
+      return [wx, wy];
+    }
+  }
+
+  class Fragment {
+    constructor(x, y, angle, color, speed, life, owner) {
+      this.x = x; this.y = y;
+      this.radius = CONFIG.fragmentRadius;
+      this.speed = speed;
+      this.vx = Math.cos(angle) * speed;
+      this.vy = Math.sin(angle) * speed;
+      this.color = color;
+      this.life = life; this.maxLife = life;
+      this.owner = owner || null;   // who gets the spoils, and who is immune
+      this.hits = null;             // blobs this shard has already cracked
+      this.trail = [];
+    }
+    update(ts) {
+      this.trail.push(this.x, this.y);
+      if (this.trail.length > CONFIG.fragmentTrailLength * 2) this.trail.splice(0, 2);
+      this.x += this.vx * ts; this.y += this.vy * ts;
+      if (this.x < this.radius) { this.x = this.radius; this.vx = -this.vx; }
+      else if (this.x > CONFIG.worldSize - this.radius) { this.x = CONFIG.worldSize - this.radius; this.vx = -this.vx; }
+      if (this.y < this.radius) { this.y = this.radius; this.vy = -this.vy; }
+      else if (this.y > CONFIG.worldSize - this.radius) { this.y = CONFIG.worldSize - this.radius; this.vy = -this.vy; }
+      this.life -= ts;
+    }
+    get alpha() {
+      return this.life >= CONFIG.fragmentFadeFrames
+        ? 1 : Math.max(0, this.life / CONFIG.fragmentFadeFrames);
+    }
+  }
+
+  // Orbs home to whoever's fragment made them — but anyone who touches one
+  // takes it, so a bot's chain is a buffet you can steal, and vice versa.
+  class Orb {
+    constructor(x, y, mass, color, owner) {
+      this.x = x; this.y = y;
+      this.mass = mass; this.color = color;
+      this.owner = owner || null;
+      this.vx = rand(-3, 3); this.vy = rand(-3, 3);
+      this.life = CONFIG.orbLife;
+      this.dead = false;
+    }
+    update(ts) {
+      const t = this.owner;
+      if (t && !t.dead) {
+        const dx = t.x - this.x, dy = t.y - this.y;
+        const d = Math.hypot(dx, dy) || 1;
+        this.vx += (dx / d) * CONFIG.orbHomingAccel * ts;
+        this.vy += (dy / d) * CONFIG.orbHomingAccel * ts;
+        const sp = Math.hypot(this.vx, this.vy);
+        if (sp > CONFIG.orbMaxSpeed) {
+          this.vx = this.vx / sp * CONFIG.orbMaxSpeed;
+          this.vy = this.vy / sp * CONFIG.orbMaxSpeed;
+        }
+      } else {
+        this.vx *= Math.pow(0.96, ts); this.vy *= Math.pow(0.96, ts);
+      }
+      this.x += this.vx * ts; this.y += this.vy * ts;
+      this.life -= ts;
+      if (this.life <= 0) this.dead = true;
+    }
+    get radius() { return 3 + Math.min(6, this.mass * 0.5); }
+  }
+
+  class Ring {
+    constructor(x, y, r, color, growth) {
+      this.x = x; this.y = y; this.radius = r; this.color = color;
+      this.growth = growth || CONFIG.ringGrowth;
+      this.life = CONFIG.ringLife; this.maxLife = CONFIG.ringLife;
+    }
+    update(ts) { this.radius += this.growth * ts; this.life -= ts; }
+  }
+
+  class Popup {
+    constructor(x, y, text, color, size) {
+      this.x = x; this.y = y; this.text = text;
+      this.color = color; this.size = size || 16;
+      this.life = 50; this.maxLife = 50;
+    }
+    update() { this.y -= 0.9; this.life--; }
+  }
+
+  // ===========================================================================
+  // World
+  // ===========================================================================
+  const World = {
+    player: null,
+    bots: [], blobs: [], food: [], primes: [],
+    fragments: [], orbs: [], rings: [], popups: [], feed: [],
+    clusters: [], foodDebt: 0, respawnTimer: 0,
+    best: CONFIG.startMass, bestChain: 0,
+    timeScale: 1, hitStop: 0, shake: 0,
+    banner: null, pendingGain: 0, gainTimer: 0, hunted: false,
+
+    init() {
+      this.clusters = [];
+      for (let i = 0; i < CONFIG.clusterCount; i++) {
+        this.clusters.push({
+          x: rand(CONFIG.clusterRadius, CONFIG.worldSize - CONFIG.clusterRadius),
+          y: rand(CONFIG.clusterRadius, CONFIG.worldSize - CONFIG.clusterRadius)
+        });
+      }
+      this.food = [];
+      for (let i = 0; i < CONFIG.foodCount; i++) this.food.push(this.newFood());
+      this.primes = [];
+      for (let i = 0; i < CONFIG.primeCount; i++) {
+        this.primes.push(new Prime(rand(200, CONFIG.worldSize - 200), rand(200, CONFIG.worldSize - 200)));
+      }
+      this.player = new Player();
+      this.bots = [];
+      for (let i = 0; i < CONFIG.botCount; i++) this.bots.push(this.newBot());
+      this.rebuildBlobs();
+    },
+
+    rebuildBlobs() { this.blobs = [this.player].concat(this.bots); },
+
+    newFood() {
+      const c = pick(this.clusters);
+      const a = Math.random() * Math.PI * 2;
+      const d = Math.sqrt(Math.random()) * CONFIG.clusterRadius;
+      return new Food(
+        clamp(c.x + Math.cos(a) * d, 10, CONFIG.worldSize - 10),
+        clamp(c.y + Math.sin(a) * d, 10, CONFIG.worldSize - 10)
+      );
+    },
+
+    newBot() {
+      return new Bot(rand(100, CONFIG.worldSize - 100), rand(100, CONFIG.worldSize - 100),
+                     rand(CONFIG.startMass * 0.6, CONFIG.startMass * 3.5));
+    },
+
+    say(text, sub, color) {
+      this.banner = { text: text, sub: sub || '', color: color || '#ffffff', life: 100, maxLife: 100 };
+    },
+    log(text, color) {
+      this.feed.unshift({ text: text, color: color || 'rgba(255,255,255,0.55)', life: 240 });
+      if (this.feed.length > 5) this.feed.pop();
+    },
+    kick(a) { this.shake = Math.min(CONFIG.shakeMax, this.shake + a); },
+
+    burst() {
+      const p = this.player;
+      if (!p.burstReady) return;
+      p.mass -= p.mass * CONFIG.burstCost;
+      p.cooldown = CONFIG.burstCooldown;
+      p.chain = 0; p.chainRefund = 0; p.tier = 0;
+      this.rings.push(new Ring(p.x, p.y, p.radius, p.color, 5));
+      this.kick(4);
+      Sound.burstOut(p.x, p.y, true);
+      this.throwFragments(p, CONFIG.burstFragments, p.color, p);
+    },
+
+    botBurst(bot) {
+      if (!bot.burstReady) return;
+      bot.mass -= bot.mass * CONFIG.burstCost;
+      bot.cooldown = CONFIG.botBurstCooldown + rand(0, CONFIG.botBurstJitter);
+      this.rings.push(new Ring(bot.x, bot.y, bot.radius, bot.color, 5));
+      Sound.burstOut(bot.x, bot.y, false);
+      this.throwFragments(bot, CONFIG.botBurstFragments, bot.color, bot);
+    },
+
+    throwFragments(source, count, color, owner) {
+      const offset = Math.random() * Math.PI * 2;
+      const spacing = (Math.PI * 2) / count;
+      const r = source.radius || 0;
+      for (let i = 0; i < count; i++) {
+        const a = offset + spacing * i;
+        this.fragments.push(new Fragment(
+          source.x + Math.cos(a) * r, source.y + Math.sin(a) * r,
+          a, color, CONFIG.fragmentSpeed, CONFIG.fragmentLife, owner));
+      }
+    },
+
+    spawnFragments(x, y, count, color, speed, life, owner) {
+      if (this.fragments.length + count > CONFIG.fragmentCap) return;
+      const offset = Math.random() * Math.PI * 2;
+      const spacing = (Math.PI * 2) / count;
+      for (let i = 0; i < count; i++) {
+        this.fragments.push(new Fragment(x, y, offset + spacing * i, color, speed, life, owner));
+      }
+    },
+
+    // Only the player's own chain drives the counter, refund and multiplier.
+    registerPop(owner) {
+      const p = this.player;
+      if (owner !== p || p.dead) return;
+      p.chain++;
+      const cap = CONFIG.burstCooldown * CONFIG.refundCapFraction;
+      if (p.chainRefund < cap) {
+        const refund = CONFIG.refundPerPop * Math.pow(CONFIG.refundDecay, p.chain);
+        const applied = Math.min(refund, cap - p.chainRefund);
+        p.chainRefund += applied;
+        p.cooldown = Math.max(0, p.cooldown - applied);
+      }
+      const tiers = CONFIG.chainTiers;
+      if (p.tier < tiers.length && p.chain >= tiers[p.tier].at) {
+        p.tier++;
+        const t = tiers[p.tier - 1];
+        this.say(t.label, 'chain ' + t.at + '   ×' + t.mult + ' mass', CONFIG.primeColor);
+        this.kick(6);
+        this.hitStop = CONFIG.hitStopFrames;
+        Sound.tierUp(p.tier);
+      }
+    },
+
+    // -------------------------------------------------------------------------
+    // A fragment landed on a blob. Add a crack; shatter it if that was enough.
+    // This is the giant-killer: no blob is immune, the big ones just need a
+    // sustained chain rather than a single touch.
+    // -------------------------------------------------------------------------
+    crack(blob, frag) {
+      if (blob === this.player && this.player.safe) return false;
+      blob.cracks++;
+      blob.crackTimer = CONFIG.crackReset;
+      this.rings.push(new Ring(blob.x, blob.y, blob.radius, '#ffffff', 2));
+
+      if (blob.cracks < blob.hitsToPop) {
+        if (blob === this.player) Sound.warn();
+        return false;
+      }
+
+      const owner = frag.owner;
+      const isPlayer = owner === this.player && !this.player.dead;
+      const wasLeader = this.leader === blob;
+      const mult = isPlayer ? this.player.multiplier : 1;
+
+      blob.dead = true;
+      this.rings.push(new Ring(blob.x, blob.y, blob.radius, blob.color, 6));
+      this.kick(blob === this.player ? 14 : Math.min(12, 4 + blob.radius * 0.06));
+      Sound.shatter(blob.x, blob.y, blob.mass, isPlayer);
+      this.registerPop(owner);
+
+      const payout = blob.mass * CONFIG.shatterYield * mult;
+      const share = payout / CONFIG.botShatterOrbs;
+      for (let k = 0; k < CONFIG.botShatterOrbs; k++) {
+        this.orbs.push(new Orb(blob.x, blob.y, share, blob.color, owner));
+      }
+
+      const killer = owner ? owner.name : 'a stray shard';
+      this.log(killer + ' shattered ' + blob.name, isPlayer ? '#3ddc84' : 'rgba(255,255,255,0.5)');
+
+      if (blob === this.player) {
+        this.killPlayer(true);
+      } else if (wasLeader && isPlayer) {
+        this.player.kills++;
+        this.say('GIANT SLAIN', blob.name + ' was #1   ·   +' + Math.floor(payout), '#3ddc84');
+        this.hitStop = CONFIG.hitStopFrames * 2;
+        this.kick(16);
+        Sound.fanfare();
+      } else if (isPlayer) {
+        this.player.kills++;
+      }
+      return true;
+    },
+
+    detonatePrime(prime, owner) {
+      prime.consume();
+      this.rings.push(new Ring(prime.x, prime.y, prime.radius, CONFIG.primeColor, 7));
+      this.kick(10);
+      this.hitStop = CONFIG.hitStopFrames;
+      Sound.prime(prime.x, prime.y);
+      this.registerPop(owner);
+      const mult = (owner === this.player && !this.player.dead) ? this.player.multiplier : 1;
+      const share = (prime.mass * mult) / 10;
+      for (let k = 0; k < 10; k++) {
+        this.orbs.push(new Orb(prime.x, prime.y, share, CONFIG.primeColor, owner));
+      }
+      this.spawnFragments(prime.x, prime.y, CONFIG.primeFragments, CONFIG.primeColor,
+                          CONFIG.fragmentSpeed, CONFIG.fragmentLife, owner);
+    },
+
+    killPlayer(shattered) {
+      const p = this.player;
+      if (p.dead) return;
+      p.dead = true;
+      p.lastChain = 0; p.chain = 0; p.tier = 0; p.cracks = 0;
+      this.rings.push(new Ring(p.x, p.y, p.radius, '#ff3b6b', 6));
+      this.respawnTimer = CONFIG.respawnDelay;
+      this.kick(14);
+      this.timeScale = 1;
+      Sound.death();
+      this.deathCause = shattered ? 'shattered by a chain' : 'eaten';
+      for (let i = this.orbs.length - 1; i >= 0; i--) {
+        if (this.orbs[i].owner === p) this.orbs[i].owner = null;
+      }
+    },
+
+    respawnPlayer() {
+      const p = this.player;
+      let bx = 0, by = 0, bestGap = -1;
+      for (let attempt = 0; attempt < 30; attempt++) {
+        const x = rand(200, CONFIG.worldSize - 200), y = rand(200, CONFIG.worldSize - 200);
+        let gap = Infinity;
+        for (let i = 0; i < this.bots.length; i++) {
+          const d = Math.hypot(this.bots[i].x - x, this.bots[i].y - y);
+          if (d < gap) gap = d;
+        }
+        if (gap > bestGap) { bestGap = gap; bx = x; by = y; }
+      }
+      p.x = bx; p.y = by;
+      p.mass = CONFIG.startMass;
+      p.vx = 0; p.vy = 0;
+      p.dead = false; p.cooldown = 0; p.peak = CONFIG.startMass;
+      p.cracks = 0; p.grace = CONFIG.spawnGrace;
+    }
+  };
+
+  // ===========================================================================
+  // Camera
+  // ===========================================================================
+  const Camera = {
+    x: CONFIG.worldSize / 2, y: CONFIG.worldSize / 2, zoom: 1, shakeX: 0, shakeY: 0,
+    update() {
+      const p = World.player;
+      this.x += (p.x - this.x) * 0.12;
+      this.y += (p.y - this.y) * 0.12;
+      const target = clamp(Math.pow(70 / p.radius, 0.45), 0.3, 1.15);
+      this.zoom += (target - this.zoom) * 0.05;
+      World.shake *= CONFIG.shakeDecay;
+      if (World.shake < 0.1) World.shake = 0;
+      this.shakeX = rand(-World.shake, World.shake);
+      this.shakeY = rand(-World.shake, World.shake);
+    },
+    toScreenX(wx) { return (wx - this.x) * this.zoom + viewW / 2 + this.shakeX; },
+    toScreenY(wy) { return (wy - this.y) * this.zoom + viewH / 2 + this.shakeY; },
+    toWorldX(sx) { return (sx - viewW / 2 - this.shakeX) / this.zoom + this.x; },
+    toWorldY(sy) { return (sy - viewH / 2 - this.shakeY) / this.zoom + this.y; }
+  };
+
+  // ===========================================================================
+  // Audio — procedural, no asset files. Everything routes through one lowpass
+  // whose cutoff follows World.timeScale, so slow motion sounds underwater.
+  //
+  // Nothing here throws if the browser has no Web Audio (or if this runs
+  // headless): init() bails, ready stays false, and every play call no-ops.
+  // ===========================================================================
+  const Sound = {
+    ctx: null, master: null, filter: null, noiseBuf: null,
+    ready: false, enabled: true, frameVoices: 0,
+
+    init() {
+      if (this.ctx) return;
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return;
+      try { this.ctx = new AC(); } catch (e) { return; }
+
+      this.filter = this.ctx.createBiquadFilter();
+      this.filter.type = 'lowpass';
+      this.filter.frequency.value = 20000;
+
+      this.master = this.ctx.createGain();
+      this.master.gain.value = CONFIG.masterVolume;
+
+      this.filter.connect(this.master);
+      this.master.connect(this.ctx.destination);
+
+      // one shared noise buffer, reused by every percussive hit
+      const len = Math.floor(this.ctx.sampleRate * 0.5);
+      const buf = this.ctx.createBuffer(1, len, this.ctx.sampleRate);
+      const data = buf.getChannelData(0);
+      for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
+      this.noiseBuf = buf;
+
+      this.ready = true;
+    },
+
+    resume() {
+      this.init();
+      if (this.ctx && this.ctx.state === 'suspended') this.ctx.resume();
+    },
+
+    toggle() {
+      this.enabled = !this.enabled;
+      if (this.master) {
+        this.master.gain.setTargetAtTime(
+          this.enabled ? CONFIG.masterVolume : 0, this.ctx.currentTime, 0.02);
+      }
+    },
+
+    // Called once per frame: resets the voice budget and sweeps the filter.
+    tick(ts) {
+      this.frameVoices = 0;
+      if (!this.ready) return;
+      const t = clamp(ts, 0, 1);
+      const target = 480 + t * t * 19000;
+      this.filter.frequency.setTargetAtTime(target, this.ctx.currentTime, 0.04);
+    },
+
+    // Pops far from the camera fade out and pan off to the side, which is what
+    // keeps 26 bursting bots from turning the arena into noise.
+    place(x, y) {
+      const range = CONFIG.audioRange / Math.max(Camera.zoom, 0.25);
+      const dx = x - Camera.x, dy = y - Camera.y;
+      const d = Math.hypot(dx, dy);
+      return { gain: clamp(1 - d / range, 0, 1), pan: clamp(dx / range, -1, 1) };
+    },
+
+    tone(freq, dur, type, gain, pan, detune) {
+      if (!this.ready || !this.enabled) return;
+      if (gain <= 0.004) return;
+      if (this.frameVoices >= CONFIG.maxVoicesPerFrame) return;
+      this.frameVoices++;
+
+      const t = this.ctx.currentTime;
+      const osc = this.ctx.createOscillator();
+      const g = this.ctx.createGain();
+      osc.type = type || 'sine';
+      osc.frequency.setValueAtTime(freq, t);
+      if (detune) osc.detune.setValueAtTime(detune, t);
+
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.linearRampToValueAtTime(gain, t + 0.004);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+
+      osc.connect(g);
+      this.route(g, pan);
+      osc.start(t);
+      osc.stop(t + dur + 0.03);
+    },
+
+    sweep(from, to, dur, type, gain, pan) {
+      if (!this.ready || !this.enabled) return;
+      if (gain <= 0.004) return;
+      if (this.frameVoices >= CONFIG.maxVoicesPerFrame) return;
+      this.frameVoices++;
+
+      const t = this.ctx.currentTime;
+      const osc = this.ctx.createOscillator();
+      const g = this.ctx.createGain();
+      osc.type = type || 'sine';
+      osc.frequency.setValueAtTime(from, t);
+      osc.frequency.exponentialRampToValueAtTime(Math.max(20, to), t + dur);
+
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.linearRampToValueAtTime(gain, t + 0.006);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+
+      osc.connect(g);
+      this.route(g, pan);
+      osc.start(t);
+      osc.stop(t + dur + 0.03);
+    },
+
+    noise(dur, gain, pan, cutoff) {
+      if (!this.ready || !this.enabled) return;
+      if (gain <= 0.004) return;
+      if (this.frameVoices >= CONFIG.maxVoicesPerFrame) return;
+      this.frameVoices++;
+
+      const t = this.ctx.currentTime;
+      const src = this.ctx.createBufferSource();
+      src.buffer = this.noiseBuf;
+      src.playbackRate.value = 1 + Math.random() * 0.3;
+
+      const bp = this.ctx.createBiquadFilter();
+      bp.type = 'bandpass';
+      bp.frequency.setValueAtTime(cutoff || 1200, t);
+      bp.frequency.exponentialRampToValueAtTime(Math.max(80, (cutoff || 1200) * 0.25), t + dur);
+      bp.Q.value = 1.1;
+
+      const g = this.ctx.createGain();
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.linearRampToValueAtTime(gain, t + 0.004);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+
+      src.connect(bp); bp.connect(g);
+      this.route(g, pan);
+      src.start(t);
+      src.stop(t + dur + 0.03);
+    },
+
+    route(node, pan) {
+      if (this.ctx.createStereoPanner) {
+        const p = this.ctx.createStereoPanner();
+        p.pan.value = clamp(pan || 0, -1, 1);
+        node.connect(p);
+        p.connect(this.filter);
+      } else {
+        node.connect(this.filter);
+      }
+    },
+
+    // ---- the actual game sounds --------------------------------------------
+
+    // One link of a chain. `index` is the link number: the pitch ladder.
+    pop(index, x, y, mine) {
+      const a = this.place(x, y);
+      if (a.gain <= 0) return;
+      if (mine) {
+        const semi = Math.min(index - 1, CONFIG.popSemitoneCap);
+        const freq = CONFIG.popBaseFreq * Math.pow(2, semi / 12);
+        this.tone(freq, 0.11, 'sine', 0.17 * a.gain, a.pan);
+      } else {
+        // someone else's chain: low, dull, and quiet so yours stays legible
+        this.tone(110 + Math.random() * 30, 0.07, 'triangle', 0.045 * a.gain, a.pan);
+      }
+    },
+
+    shatter(x, y, mass, mine) {
+      const a = this.place(x, y);
+      if (a.gain <= 0) return;
+      const base = clamp(150 - Math.sqrt(mass) * 2.2, 42, 150);
+      this.sweep(base, base * 0.45, 0.34, 'triangle', (mine ? 0.34 : 0.2) * a.gain, a.pan);
+      this.noise(0.26, (mine ? 0.24 : 0.13) * a.gain, a.pan, 900);
+    },
+
+    burstOut(x, y, mine) {
+      const a = this.place(x, y);
+      if (a.gain <= 0) return;
+      this.noise(0.3, (mine ? 0.3 : 0.12) * a.gain, a.pan, mine ? 2400 : 1300);
+      this.sweep(mine ? 520 : 300, 90, 0.28, 'sawtooth', (mine ? 0.16 : 0.07) * a.gain, a.pan);
+    },
+
+    prime(x, y) {
+      const a = this.place(x, y);
+      if (a.gain <= 0) return;
+      this.sweep(180, 900, 0.3, 'square', 0.16 * a.gain, a.pan);
+      this.tone(1320, 0.4, 'sine', 0.14 * a.gain, a.pan, 8);
+      this.noise(0.4, 0.2 * a.gain, a.pan, 2600);
+    },
+
+    // A rising arpeggio when the chain multiplier steps up.
+    tierUp(tier) {
+      if (!this.ready || !this.enabled) return;
+      const root = CONFIG.popBaseFreq * Math.pow(2, (tier - 1) * 0.25);
+      const steps = [0, 4, 7, 12];
+      for (let i = 0; i < steps.length; i++) {
+        const f = root * Math.pow(2, steps[i] / 12);
+        const t = this.ctx.currentTime + i * 0.05;
+        const osc = this.ctx.createOscillator();
+        const g = this.ctx.createGain();
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(f, t);
+        g.gain.setValueAtTime(0.0001, t);
+        g.gain.linearRampToValueAtTime(0.2, t + 0.01);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + 0.3);
+        osc.connect(g); g.connect(this.filter);
+        osc.start(t); osc.stop(t + 0.34);
+      }
+    },
+
+    fanfare() {
+      if (!this.ready || !this.enabled) return;
+      const steps = [0, 7, 12, 19];
+      for (let i = 0; i < steps.length; i++) {
+        const f = 196 * Math.pow(2, steps[i] / 12);
+        const t = this.ctx.currentTime + i * 0.07;
+        const osc = this.ctx.createOscillator();
+        const g = this.ctx.createGain();
+        osc.type = 'square';
+        osc.frequency.setValueAtTime(f, t);
+        g.gain.setValueAtTime(0.0001, t);
+        g.gain.linearRampToValueAtTime(0.15, t + 0.01);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + 0.45);
+        osc.connect(g); g.connect(this.filter);
+        osc.start(t); osc.stop(t + 0.5);
+      }
+    },
+
+    collect(mult) {
+      this.tone(1400 + Math.random() * 200, 0.05, 'sine', mult > 1 ? 0.07 : 0.04, 0);
+    },
+    warn() { this.tone(160, 0.14, 'square', 0.14, 0); },
+    death() {
+      this.sweep(340, 60, 0.7, 'sawtooth', 0.28, 0);
+      this.noise(0.5, 0.2, 0, 700);
+    },
+    eatBlob(x, y) {
+      const a = this.place(x, y);
+      this.tone(320, 0.13, 'sine', 0.14 * a.gain, a.pan);
+      this.tone(480, 0.1, 'sine', 0.09 * a.gain, a.pan);
+    }
+  };
+
+  // ===========================================================================
+  // Input
+  // ===========================================================================
+  const Input = { x: 0, y: 0, active: false };
+  const burstBtn = { x: 0, y: 0, r: 42 };
+  const muteBtn = { x: 0, y: 0, r: 20 };
+  function layoutBurstButton() {
+    burstBtn.x = viewW - 78; burstBtn.y = viewH - 78;
+    muteBtn.x = viewW - 78; muteBtn.y = viewH - 150;
+  }
+  function inBurstButton(sx, sy) {
+    const dx = sx - burstBtn.x, dy = sy - burstBtn.y;
+    return dx * dx + dy * dy < burstBtn.r * burstBtn.r;
+  }
+  function inMuteButton(sx, sy) {
+    const dx = sx - muteBtn.x, dy = sy - muteBtn.y;
+    return dx * dx + dy * dy < muteBtn.r * muteBtn.r;
+  }
+
+  canvas.addEventListener('mousemove', (e) => { Input.x = e.clientX; Input.y = e.clientY; Input.active = true; });
+  canvas.addEventListener('mousedown', (e) => {
+    Sound.resume();                       // browsers only allow audio after a gesture
+    if (inMuteButton(e.clientX, e.clientY)) { Sound.toggle(); return; }
+    Input.x = e.clientX; Input.y = e.clientY; Input.active = true; World.burst();
+  });
+  canvas.addEventListener('touchstart', (e) => {
+    e.preventDefault();
+    Sound.resume();
+    const t = e.changedTouches[0];
+    if (inMuteButton(t.clientX, t.clientY)) { Sound.toggle(); return; }
+    if (inBurstButton(t.clientX, t.clientY)) { World.burst(); return; }
+    Input.x = t.clientX; Input.y = t.clientY; Input.active = true;
+  }, { passive: false });
+  canvas.addEventListener('touchmove', (e) => {
+    e.preventDefault();
+    const t = e.changedTouches[0];
+    if (inBurstButton(t.clientX, t.clientY)) return;
+    Input.x = t.clientX; Input.y = t.clientY; Input.active = true;
+  }, { passive: false });
+  canvas.addEventListener('touchend', (e) => { e.preventDefault(); }, { passive: false });
+  window.addEventListener('keydown', (e) => {
+    if (e.code === 'Space') { e.preventDefault(); Sound.resume(); World.burst(); }
+    else if (e.code === 'KeyM') { Sound.resume(); Sound.toggle(); }
+  });
+  window.addEventListener('resize', () => { resize(); layoutBurstButton(); });
+
+  // ===========================================================================
+  // Update
+  // ===========================================================================
+  function update() {
+    const p = World.player;
+
+    let ts;
+    if (World.hitStop > 0) { World.hitStop--; ts = CONFIG.hitStopScale; }
+    else if (p.chain >= CONFIG.slowMoStart && !p.dead) {
+      const t = clamp((p.chain - CONFIG.slowMoStart) / (CONFIG.slowMoEnd - CONFIG.slowMoStart), 0, 1);
+      ts = 1 + (CONFIG.slowMoScale - 1) * t;
+    } else ts = 1;
+    World.timeScale = ts;
+    Sound.tick(ts);
+
+    // --- player -------------------------------------------------------------
+    if (!p.dead) {
+      if (Input.active) p.move(Camera.toWorldX(Input.x) - p.x, Camera.toWorldY(Input.y) - p.y, ts);
+      else p.move(0, 0, ts);
+      if (p.cooldown > 0) p.cooldown -= ts;
+      if (p.mass > CONFIG.decayAbove) p.mass -= p.mass * CONFIG.decayRate * ts;
+      if (p.mass > p.peak) p.peak = p.mass;
+      if (p.peak > World.best) World.best = p.peak;
+      if (p.grace > 0) p.grace -= ts;
+      p.tickCracks(ts);
+    } else {
+      World.respawnTimer -= ts;
+      if (World.respawnTimer <= 0) World.respawnPlayer();
+    }
+
+    // --- bots ---------------------------------------------------------------
+    for (let i = 0; i < World.bots.length; i++) {
+      const b = World.bots[i];
+      if (b.dead) continue;
+      if (b.cooldown > 0) b.cooldown -= ts;
+      const dir = b.think(World);
+      b.move(dir[0], dir[1], ts);
+      if (b.mass > CONFIG.decayAbove) b.mass -= b.mass * CONFIG.decayRate * ts;
+      b.tickCracks(ts);
+    }
+
+    for (let i = 0; i < World.food.length; i++) World.food[i].update(ts);
+
+    // --- primes, including the ones that go off by themselves ----------------
+    for (let i = 0; i < World.primes.length; i++) {
+      const pr = World.primes[i];
+      pr.update(ts);
+      if (pr.live && pr.fuse <= 0) {
+        World.detonatePrime(pr, null);   // ownerless: free-for-all spoils
+        World.log('a prime node went off', CONFIG.primeColor);
+      }
+    }
+
+    // --- blobs eat food -----------------------------------------------------
+    for (let bi = 0; bi < World.blobs.length; bi++) {
+      const blob = World.blobs[bi];
+      if (blob.dead) continue;
+      const reachSq = blob.radius * blob.radius;
+      for (let fi = World.food.length - 1; fi >= 0; fi--) {
+        const f = World.food[fi];
+        const dx = f.x - blob.x, dy = f.y - blob.y;
+        if (dx * dx + dy * dy < reachSq) {
+          blob.mass += f.mass; World.food.splice(fi, 1); World.foodDebt++;
+        }
+      }
+    }
+
+    // --- blobs eat prime nodes ----------------------------------------------
+    for (let bi = 0; bi < World.blobs.length; bi++) {
+      const blob = World.blobs[bi];
+      if (blob.dead) continue;
+      const reachSq = blob.radius * blob.radius;
+      for (let pi = 0; pi < World.primes.length; pi++) {
+        const prime = World.primes[pi];
+        if (!prime.live) continue;
+        const dx = prime.x - blob.x, dy = prime.y - blob.y;
+        if (dx * dx + dy * dy < reachSq) {
+          blob.mass += prime.mass;
+          prime.consume();
+          World.rings.push(new Ring(prime.x, prime.y, prime.radius, CONFIG.primeColor, 5));
+          if (blob === p) {
+            World.popups.push(new Popup(p.x, p.y - p.radius - 10, '+' + CONFIG.primeMass + ' PRIME', CONFIG.primeColor, 20));
+            World.kick(8);
+          }
+        }
+      }
+    }
+
+    // --- blobs eat blobs ----------------------------------------------------
+    for (let i = 0; i < World.blobs.length; i++) {
+      const a = World.blobs[i];
+      if (a.dead) continue;
+      for (let j = 0; j < World.blobs.length; j++) {
+        if (i === j) continue;
+        const b = World.blobs[j];
+        if (b.dead) continue;
+        if (b === p && p.safe) continue;
+        if (a.canEat(b) && a.overlaps(b)) {
+          a.mass += b.mass * 0.85;
+          if (b === World.player) World.killPlayer(false);
+          else {
+            b.dead = true;
+            if (a === p) {
+              p.kills++;
+              World.popups.push(new Popup(b.x, b.y, '+' + Math.floor(b.mass * 0.85), '#3ddc84', 18));
+              World.kick(5);
+              Sound.eatBlob(b.x, b.y);
+            }
+            World.log(a.name + ' ate ' + b.name, a === p ? '#3ddc84' : 'rgba(255,255,255,0.4)');
+          }
+          World.rings.push(new Ring(b.x, b.y, b.radius, b.color, 4));
+        }
+      }
+    }
+
+    // -------------------------------------------------------------------------
+    // CHAIN COLLISION
+    //
+    // Every live fragment is tested against every pellet, prime node and blob.
+    // Hits are circle-circle overlaps compared as squared distances, so the
+    // inner loop never calls Math.sqrt.
+    //
+    // Pellet -> homing orb for the fragment's owner + 1 fragment at 80% life and
+    //           96% speed. That decay is what makes a cascade through a dense
+    //           field peter out instead of running away forever.
+    // Prime  -> a 24-fragment secondary detonation.
+    // Blob   -> a crack. Enough cracks inside crackReset frames and it shatters,
+    //           whatever its size. A fragment never cracks its own owner, so a
+    //           burst cannot kill you, but anyone else's can.
+    //
+    // The colliding fragment survives every case and keeps travelling, so one
+    // fragment can rip through a whole cluster. The loop bound is captured up
+    // front so fragments spawned by a link are only tested from the next frame,
+    // which stops a newborn fragment from instantly re-popping its neighbours —
+    // the chain reads as a spreading wave, not one flash.
+    // -------------------------------------------------------------------------
+    const fragCount = World.fragments.length;
+
+    for (let i = 0; i < fragCount; i++) {
+      const f = World.fragments[i];
+      if (f.life <= 0) continue;
+      const ownerIsPlayer = f.owner === p && !p.dead;
+      const mult = ownerIsPlayer ? p.multiplier : 1;
+
+      // pellets
+      for (let j = World.food.length - 1; j >= 0; j--) {
+        const food = World.food[j];
+        const dx = f.x - food.x, dy = f.y - food.y;
+        const reach = f.radius + food.radius;
+        if (dx * dx + dy * dy < reach * reach) {
+          World.food.splice(j, 1); World.foodDebt++;
+          World.orbs.push(new Orb(food.x, food.y, food.mass * mult, food.color, f.owner));
+          World.rings.push(new Ring(food.x, food.y, food.radius, food.color, 2.4));
+          World.kick(ownerIsPlayer ? CONFIG.shakePerPop * 0.35 : 0);
+          World.registerPop(f.owner);
+          // after registerPop, so the pitch reflects this link's index
+          Sound.pop(ownerIsPlayer ? p.chain : 0, food.x, food.y, ownerIsPlayer);
+          World.spawnFragments(food.x, food.y, CONFIG.chainFromFood, food.color,
+            f.speed * CONFIG.chainSpeedDecay, Math.round(f.maxLife * CONFIG.chainLifeDecay), f.owner);
+        }
+      }
+
+      // prime nodes
+      for (let j = 0; j < World.primes.length; j++) {
+        const prime = World.primes[j];
+        if (!prime.live) continue;
+        const dx = f.x - prime.x, dy = f.y - prime.y;
+        const reach = f.radius + prime.radius;
+        if (dx * dx + dy * dy < reach * reach) World.detonatePrime(prime, f.owner);
+      }
+
+      // blobs — nothing is immune, size only means more cracks
+      for (let j = 0; j < World.blobs.length; j++) {
+        const blob = World.blobs[j];
+        if (blob.dead || blob === f.owner) continue;
+        const dx = f.x - blob.x, dy = f.y - blob.y;
+        const reach = f.radius + blob.radius;
+        if (dx * dx + dy * dy < reach * reach) {
+          // A shard sits inside a big blob for many frames — count it once, or
+          // one fragment alone would shatter a giant it merely passed through.
+          if (!f.hits) f.hits = new Set();
+          if (f.hits.has(blob)) continue;
+          f.hits.add(blob);
+
+          if (World.crack(blob, f)) {
+            World.spawnFragments(blob.x, blob.y, CONFIG.chainFromBot, blob.color,
+              CONFIG.fragmentSpeed, CONFIG.fragmentLife, f.owner);
+          }
+        }
+      }
+    }
+    // -------------------------------------------------------------------------
+
+    for (let i = World.fragments.length - 1; i >= 0; i--) {
+      const f = World.fragments[i];
+      f.update(ts);
+      if (f.life <= 0) World.fragments.splice(i, 1);
+    }
+
+    // --- your chain closes out ----------------------------------------------
+    let playerFragsAlive = false;
+    for (let i = 0; i < World.fragments.length; i++) {
+      if (World.fragments[i].owner === p) { playerFragsAlive = true; break; }
+    }
+    if (!playerFragsAlive && p.chain > 0) {
+      p.lastChain = p.chain;
+      if (p.chain > World.bestChain) {
+        World.bestChain = p.chain;
+        World.say('BEST CHAIN', p.chain + ' links', '#31c4ff');
+        World.kick(8);
+      }
+      p.chain = 0; p.tier = 0; p.chainRefund = 0;
+    }
+
+    // --- orbs, collectible by anyone who touches them ------------------------
+    for (let i = World.orbs.length - 1; i >= 0; i--) {
+      const o = World.orbs[i];
+      o.update(ts);
+      for (let bi = 0; bi < World.blobs.length; bi++) {
+        const blob = World.blobs[bi];
+        if (blob.dead) continue;
+        const dx = o.x - blob.x, dy = o.y - blob.y;
+        if (dx * dx + dy * dy < blob.radius * blob.radius) {
+          blob.mass += o.mass;
+          if (blob === p) World.pendingGain += o.mass;
+          o.dead = true;
+          break;
+        }
+      }
+      if (o.dead) World.orbs.splice(i, 1);
+    }
+
+    World.gainTimer--;
+    if (World.pendingGain > 0 && World.gainTimer <= 0) {
+      World.popups.push(new Popup(p.x + rand(-12, 12), p.y - p.radius - 12,
+        '+' + Math.max(1, Math.round(World.pendingGain)),
+        p.multiplier > 1 ? CONFIG.primeColor : '#ffffff',
+        p.multiplier > 1 ? 20 : 15));
+      Sound.collect(p.multiplier);
+      World.pendingGain = 0; World.gainTimer = 15;
+    }
+
+    for (let i = World.rings.length - 1; i >= 0; i--) {
+      const r = World.rings[i]; r.update(ts);
+      if (r.life <= 0) World.rings.splice(i, 1);
+    }
+    for (let i = World.popups.length - 1; i >= 0; i--) {
+      const u = World.popups[i]; u.update();
+      if (u.life <= 0) World.popups.splice(i, 1);
+    }
+    for (let i = World.feed.length - 1; i >= 0; i--) {
+      World.feed[i].life--;
+      if (World.feed[i].life <= 0) World.feed.splice(i, 1);
+    }
+    if (World.banner) { World.banner.life--; if (World.banner.life <= 0) World.banner = null; }
+
+    // --- refill -------------------------------------------------------------
+    let refill = Math.min(World.foodDebt, CONFIG.foodRespawnPerFrame + Math.random());
+    while (refill >= 1 && World.food.length < CONFIG.foodCount) {
+      World.food.push(World.newFood()); World.foodDebt--; refill--;
+    }
+    for (let i = World.bots.length - 1; i >= 0; i--) {
+      if (World.bots[i].dead) World.bots.splice(i, 1);
+    }
+    while (World.bots.length < CONFIG.botCount) World.bots.push(World.newBot());
+    World.rebuildBlobs();
+
+    // --- leader + hunters ----------------------------------------------------
+    const ranked = World.blobs.filter(b => !b.dead).sort((a, b) => b.mass - a.mass);
+    World.leader = ranked.length ? ranked[0] : null;
+    const leading = !p.dead && World.leader === p;
+    let marked = 0;
+    for (let i = 0; i < ranked.length; i++) {
+      const b = ranked[i];
+      if (b === p) continue;
+      const shouldHunt = leading && marked < CONFIG.hunterCount && b.canEat(p);
+      b.hunter = shouldHunt;
+      if (shouldHunt) marked++;
+    }
+    const nowHunted = marked > 0;
+    if (nowHunted && !World.hunted) World.say('HUNTED', 'you are the biggest target', '#ff3b6b');
+    World.hunted = nowHunted;
+
+    Camera.update();
+  }
+
+  // ===========================================================================
+  // Draw
+  // ===========================================================================
+  function draw() {
+    ctx.fillStyle = CONFIG.background;
+    ctx.fillRect(0, 0, viewW, viewH);
+    drawGrid();
+
+    const z = Camera.zoom, margin = 80;
+    const visible = (wx, wy, r) => {
+      const sx = Camera.toScreenX(wx), sy = Camera.toScreenY(wy), sr = r * z;
+      return sx > -sr - margin && sx < viewW + sr + margin &&
+             sy > -sr - margin && sy < viewH + sr + margin;
+    };
+
+    ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(Camera.toScreenX(0), Camera.toScreenY(0), CONFIG.worldSize * z, CONFIG.worldSize * z);
+
+    for (let i = 0; i < World.rings.length; i++) {
+      const r = World.rings[i];
+      if (!visible(r.x, r.y, r.radius)) continue;
+      ctx.globalAlpha = Math.max(0, r.life / r.maxLife) * 0.8;
+      ctx.strokeStyle = r.color; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(Camera.toScreenX(r.x), Camera.toScreenY(r.y), r.radius * z, 0, Math.PI * 2); ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+
+    for (let i = 0; i < World.food.length; i++) {
+      const f = World.food[i];
+      if (!visible(f.x, f.y, f.radius)) continue;
+      ctx.fillStyle = f.color;
+      ctx.beginPath(); ctx.arc(Camera.toScreenX(f.x), Camera.toScreenY(f.y), f.radius * z, 0, Math.PI * 2); ctx.fill();
+    }
+
+    for (let i = 0; i < World.primes.length; i++) {
+      const pr = World.primes[i];
+      if (!pr.live || !visible(pr.x, pr.y, pr.radius * 2)) continue;
+      const sx = Camera.toScreenX(pr.x), sy = Camera.toScreenY(pr.y), dr = pr.drawRadius * z;
+      const u = pr.urgency;
+      ctx.globalAlpha = 0.18 + u * 0.3 * (0.5 + Math.sin(pr.phase * (2 + u * 8)) * 0.5);
+      ctx.fillStyle = CONFIG.primeColor;
+      ctx.beginPath(); ctx.arc(sx, sy, dr * 2.1, 0, Math.PI * 2); ctx.fill();
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = CONFIG.primeColor;
+      ctx.beginPath(); ctx.arc(sx, sy, dr, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = 'rgba(255,255,255,0.85)'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(sx, sy, dr + 5 + Math.sin(pr.phase) * 2, 0, Math.PI * 2); ctx.stroke();
+    }
+
+    for (let i = 0; i < World.orbs.length; i++) {
+      const o = World.orbs[i];
+      if (!visible(o.x, o.y, o.radius)) continue;
+      ctx.fillStyle = o.color;
+      ctx.globalAlpha = Math.min(1, o.life / 60);
+      ctx.beginPath(); ctx.arc(Camera.toScreenX(o.x), Camera.toScreenY(o.y), o.radius * z, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+
+    const drawable = World.blobs.filter(b => !b.dead).sort((a, b) => a.mass - b.mass);
+    for (let i = 0; i < drawable.length; i++) drawBlob(drawable[i], z, visible);
+
+    for (let i = 0; i < World.fragments.length; i++) {
+      const f = World.fragments[i];
+      if (!visible(f.x, f.y, f.radius)) continue;
+      const a = f.alpha;
+      ctx.fillStyle = f.color;
+      const points = f.trail.length / 2;
+      for (let k = 0; k < points; k++) {
+        const t = (k + 1) / (points + 1);
+        ctx.globalAlpha = a * t * 0.35;
+        ctx.beginPath();
+        ctx.arc(Camera.toScreenX(f.trail[k * 2]), Camera.toScreenY(f.trail[k * 2 + 1]), f.radius * t * z, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.globalAlpha = a;
+      ctx.beginPath(); ctx.arc(Camera.toScreenX(f.x), Camera.toScreenY(f.y), f.radius * z, 0, Math.PI * 2); ctx.fill();
+      // someone else's shard gets a hostile outline
+      if (f.owner !== World.player) {
+        ctx.globalAlpha = a * 0.8;
+        ctx.strokeStyle = 'rgba(255,59,107,0.9)'; ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.arc(Camera.toScreenX(f.x), Camera.toScreenY(f.y), f.radius * z + 2, 0, Math.PI * 2); ctx.stroke();
+      }
+    }
+    ctx.globalAlpha = 1;
+
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    for (let i = 0; i < World.popups.length; i++) {
+      const u = World.popups[i];
+      ctx.globalAlpha = Math.min(1, u.life / 22);
+      ctx.fillStyle = u.color;
+      ctx.font = '600 ' + u.size + 'px system-ui, sans-serif';
+      ctx.fillText(u.text, Camera.toScreenX(u.x), Camera.toScreenY(u.y));
+    }
+    ctx.globalAlpha = 1;
+
+    drawHUD();
+  }
+
+  function drawBlob(b, z, visible) {
+    if (!visible(b.x, b.y, b.radius)) return;
+    const sx = Camera.toScreenX(b.x), sy = Camera.toScreenY(b.y), sr = b.radius * z;
+    const isPlayer = b === World.player;
+
+    ctx.fillStyle = b.color;
+    ctx.globalAlpha = isPlayer ? 1 : 0.88;
+    ctx.beginPath(); ctx.arc(sx, sy, sr, 0, Math.PI * 2); ctx.fill();
+    ctx.globalAlpha = 1;
+
+    if (!isPlayer && !World.player.dead) {
+      if (b.hunter) {
+        ctx.strokeStyle = 'rgba(255,59,107,0.95)'; ctx.lineWidth = 4;
+        ctx.beginPath(); ctx.arc(sx, sy, sr + 6 + Math.sin(Date.now() / 120) * 3, 0, Math.PI * 2); ctx.stroke();
+      }
+      if (b === World.leader) {
+        ctx.strokeStyle = 'rgba(255,216,59,0.85)'; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(sx, sy, sr + 10, 0, Math.PI * 2); ctx.stroke();
+      }
+      if (b.canEat(World.player)) { ctx.strokeStyle = 'rgba(255,59,107,0.9)'; ctx.lineWidth = 3; }
+      else if (World.player.canEat(b)) { ctx.strokeStyle = 'rgba(255,255,255,0.45)'; ctx.lineWidth = 1.5; }
+      else { ctx.strokeStyle = 'rgba(255,255,255,0.15)'; ctx.lineWidth = 1.5; }
+      ctx.beginPath(); ctx.arc(sx, sy, sr, 0, Math.PI * 2); ctx.stroke();
+    }
+
+    // damage arc — how close this blob is to shattering
+    if (b.cracks > 0) {
+      const frac = clamp(b.cracks / b.hitsToPop, 0, 1);
+      ctx.strokeStyle = frac > 0.66 ? '#ff3b6b' : '#ffffff';
+      ctx.lineWidth = 3;
+      ctx.globalAlpha = 0.9;
+      ctx.beginPath();
+      ctx.arc(sx, sy, sr + 7, -Math.PI / 2, -Math.PI / 2 + frac * Math.PI * 2);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
+
+    if (isPlayer) {
+      ctx.strokeStyle = World.player.burstReady ? '#31c4ff' : 'rgba(255,255,255,0.25)';
+      ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.arc(sx, sy, sr + 4, 0, Math.PI * 2); ctx.stroke();
+
+      // spawn grace: a bright flickering shell, so you know you are untouchable
+      if (World.player.safe) {
+        ctx.globalAlpha = 0.35 + Math.sin(Date.now() / 60) * 0.3;
+        ctx.strokeStyle = '#31c4ff'; ctx.lineWidth = 4;
+        ctx.beginPath(); ctx.arc(sx, sy, sr + 12, 0, Math.PI * 2); ctx.stroke();
+        ctx.globalAlpha = 1;
+      }
+    }
+
+    if (sr > 14) {
+      ctx.fillStyle = isPlayer ? '#0d0d12' : 'rgba(0,0,0,0.65)';
+      ctx.font = '600 ' + Math.max(10, Math.min(22, sr * 0.45)) + 'px system-ui, sans-serif';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(b.name, sx, sy);
+    }
+  }
+
+  function drawGrid() {
+    const z = Camera.zoom, step = CONFIG.gridStep * z;
+    if (step < 8) return;
+    ctx.strokeStyle = CONFIG.gridColor; ctx.lineWidth = 1;
+    ctx.beginPath();
+    const ox = Camera.toScreenX(0) % step, oy = Camera.toScreenY(0) % step;
+    for (let x = ox; x < viewW; x += step) { ctx.moveTo(x, 0); ctx.lineTo(x, viewH); }
+    for (let y = oy; y < viewH; y += step) { ctx.moveTo(0, y); ctx.lineTo(viewW, y); }
+    ctx.stroke();
+  }
+
+  function drawHUD() {
+    const p = World.player;
+    ctx.textBaseline = 'top';
+
+    ctx.textAlign = 'left';
+    ctx.font = '600 34px system-ui, sans-serif';
+    ctx.fillStyle = 'rgba(255,255,255,0.92)';
+    ctx.fillText(Math.floor(p.mass), 20, 18);
+    ctx.font = '13px system-ui, sans-serif';
+    ctx.fillStyle = 'rgba(255,255,255,0.4)';
+    ctx.fillText('mass  ·  best ' + Math.floor(World.best) +
+                 '  ·  best chain ' + World.bestChain +
+                 '  ·  kills ' + p.kills, 20, 58);
+
+    // how close you are to shattering
+    if (p.cracks > 0 && !p.dead) {
+      const left = p.hitsToPop - p.cracks;
+      ctx.font = '600 13px system-ui, sans-serif';
+      ctx.fillStyle = left <= 2 ? '#ff3b6b' : 'rgba(255,255,255,0.6)';
+      ctx.fillText('CRACKED  ' + left + ' hit' + (left === 1 ? '' : 's') + ' from shattering', 20, 78);
+    }
+
+    if (p.chain > 0) {
+      ctx.textAlign = 'center';
+      ctx.font = '600 52px system-ui, sans-serif';
+      ctx.fillStyle = p.tier > 0 ? CONFIG.primeColor : 'rgba(255,255,255,0.9)';
+      ctx.fillText(p.chain, viewW / 2, 18);
+      ctx.font = '12px system-ui, sans-serif';
+      ctx.fillStyle = 'rgba(255,255,255,0.4)';
+      ctx.fillText('CHAIN', viewW / 2, 74);
+      if (p.tier > 0) {
+        ctx.font = '600 22px system-ui, sans-serif';
+        ctx.fillStyle = CONFIG.primeColor;
+        ctx.fillText('×' + p.multiplier, viewW / 2, 92);
+      }
+    } else if (p.lastChain > 0) {
+      ctx.textAlign = 'center';
+      ctx.font = '13px system-ui, sans-serif';
+      ctx.fillStyle = 'rgba(255,255,255,0.3)';
+      ctx.fillText('last chain ' + p.lastChain, viewW / 2, 22);
+    }
+
+    if (World.banner) {
+      const b = World.banner, a = Math.min(1, b.life / 25);
+      ctx.textAlign = 'center'; ctx.globalAlpha = a;
+      ctx.font = '700 40px system-ui, sans-serif';
+      ctx.fillStyle = b.color;
+      ctx.fillText(b.text, viewW / 2, viewH * 0.26);
+      if (b.sub) {
+        ctx.font = '14px system-ui, sans-serif';
+        ctx.fillStyle = 'rgba(255,255,255,0.6)';
+        ctx.fillText(b.sub, viewW / 2, viewH * 0.26 + 48);
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    if (World.hunted && !p.dead) {
+      ctx.textAlign = 'center';
+      ctx.font = '600 13px system-ui, sans-serif';
+      ctx.fillStyle = 'rgba(255,59,107,' + (0.55 + Math.sin(Date.now() / 200) * 0.35) + ')';
+      ctx.fillText('HUNTED', viewW / 2, viewH - 34);
+    }
+
+    drawLeaderboard();
+    drawFeed();
+    drawMinimap();
+    drawBurstButton();
+    drawMuteButton();
+
+    if (p.dead) {
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.font = '600 46px system-ui, sans-serif';
+      ctx.fillStyle = 'rgba(255,59,107,0.95)';
+      ctx.fillText(World.deathCause === 'shattered by a chain' ? 'shattered' : 'eaten', viewW / 2, viewH / 2 - 14);
+      ctx.font = '15px system-ui, sans-serif';
+      ctx.fillStyle = 'rgba(255,255,255,0.5)';
+      ctx.fillText('peaked at ' + Math.floor(p.peak) + ' mass', viewW / 2, viewH / 2 + 26);
+    }
+    ctx.textBaseline = 'alphabetic';
+  }
+
+  function drawLeaderboard() {
+    const ranked = World.blobs.filter(b => !b.dead).sort((a, b) => b.mass - a.mass).slice(0, 5);
+    const x = viewW - 20;
+    ctx.textAlign = 'right'; ctx.textBaseline = 'top';
+    ctx.font = '11px system-ui, sans-serif';
+    ctx.fillStyle = 'rgba(255,255,255,0.35)';
+    ctx.fillText('LEADERS', x, 20);
+    ctx.font = '13px system-ui, sans-serif';
+    for (let i = 0; i < ranked.length; i++) {
+      const b = ranked[i];
+      ctx.fillStyle = b === World.player ? '#31c4ff'
+                    : (b.hunter ? 'rgba(255,59,107,0.85)' : 'rgba(255,255,255,0.55)');
+      ctx.fillText((i + 1) + '. ' + b.name + '  ' + Math.floor(b.mass), x, 40 + i * 19);
+    }
+  }
+
+  function drawFeed() {
+    const x = viewW - 20;
+    ctx.textAlign = 'right'; ctx.textBaseline = 'top';
+    ctx.font = '12px system-ui, sans-serif';
+    for (let i = 0; i < World.feed.length; i++) {
+      const e = World.feed[i];
+      ctx.globalAlpha = Math.min(1, e.life / 60);
+      ctx.fillStyle = e.color;
+      ctx.fillText(e.text, x, 150 + i * 17);
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  function drawMinimap() {
+    const size = 116, x = 20, y = viewH - size - 20, s = size / CONFIG.worldSize;
+    ctx.fillStyle = 'rgba(255,255,255,0.05)'; ctx.fillRect(x, y, size, size);
+    ctx.strokeStyle = 'rgba(255,255,255,0.15)'; ctx.lineWidth = 1; ctx.strokeRect(x, y, size, size);
+
+    for (let i = 0; i < World.primes.length; i++) {
+      const pr = World.primes[i];
+      if (!pr.live) continue;
+      ctx.fillStyle = CONFIG.primeColor;
+      ctx.beginPath(); ctx.arc(x + pr.x * s, y + pr.y * s, 3, 0, Math.PI * 2); ctx.fill();
+    }
+    // other people's shards show up here — chains arriving from off screen
+    ctx.fillStyle = 'rgba(255,59,107,0.5)';
+    for (let i = 0; i < World.fragments.length; i++) {
+      const f = World.fragments[i];
+      if (f.owner === World.player) continue;
+      ctx.fillRect(x + f.x * s, y + f.y * s, 1.5, 1.5);
+    }
+    for (let i = 0; i < World.bots.length; i++) {
+      const b = World.bots[i];
+      ctx.fillStyle = b.hunter ? '#ff3b6b'
+                    : (b.canEat(World.player) ? 'rgba(255,59,107,0.7)' : 'rgba(255,255,255,0.3)');
+      ctx.fillRect(x + b.x * s - 1, y + b.y * s - 1, 2.5, 2.5);
+    }
+    if (!World.player.dead) {
+      ctx.fillStyle = '#31c4ff';
+      ctx.beginPath(); ctx.arc(x + World.player.x * s, y + World.player.y * s, 3, 0, Math.PI * 2); ctx.fill();
+    }
+  }
+
+  function drawBurstButton() {
+    const p = World.player, ready = p.burstReady;
+    const progress = 1 - clamp(p.cooldown / CONFIG.burstCooldown, 0, 1);
+    ctx.beginPath(); ctx.arc(burstBtn.x, burstBtn.y, burstBtn.r, 0, Math.PI * 2);
+    ctx.fillStyle = ready ? 'rgba(49,196,255,0.16)' : 'rgba(255,255,255,0.05)';
+    ctx.fill();
+    if (ready) {
+      ctx.globalAlpha = 0.35 + Math.sin(Date.now() / 220) * 0.25;
+      ctx.strokeStyle = '#31c4ff'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(burstBtn.x, burstBtn.y, burstBtn.r + 6, 0, Math.PI * 2); ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
+    ctx.beginPath();
+    ctx.arc(burstBtn.x, burstBtn.y, burstBtn.r - 4, -Math.PI / 2, -Math.PI / 2 + progress * Math.PI * 2);
+    ctx.strokeStyle = ready ? '#31c4ff' : 'rgba(255,255,255,0.35)';
+    ctx.lineWidth = 3; ctx.stroke();
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.font = '600 13px system-ui, sans-serif';
+    ctx.fillStyle = ready ? '#31c4ff' : 'rgba(255,255,255,0.4)';
+    ctx.fillText('BURST', burstBtn.x, burstBtn.y);
+    ctx.textBaseline = 'top';
+  }
+
+  function drawMuteButton() {
+    const on = Sound.enabled;
+    ctx.beginPath(); ctx.arc(muteBtn.x, muteBtn.y, muteBtn.r, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(255,255,255,0.05)'; ctx.fill();
+    ctx.strokeStyle = on ? 'rgba(49,196,255,0.5)' : 'rgba(255,255,255,0.2)';
+    ctx.lineWidth = 1.5; ctx.stroke();
+
+    const x = muteBtn.x, y = muteBtn.y;
+    ctx.fillStyle = on ? '#31c4ff' : 'rgba(255,255,255,0.35)';
+    ctx.beginPath();
+    ctx.moveTo(x - 7, y - 3); ctx.lineTo(x - 3, y - 3); ctx.lineTo(x + 1, y - 7);
+    ctx.lineTo(x + 1, y + 7); ctx.lineTo(x - 3, y + 3); ctx.lineTo(x - 7, y + 3);
+    ctx.closePath(); ctx.fill();
+
+    ctx.strokeStyle = ctx.fillStyle;
+    ctx.lineWidth = 1.5;
+    if (on) {
+      ctx.beginPath(); ctx.arc(x + 2, y, 5, -0.9, 0.9); ctx.stroke();
+      ctx.beginPath(); ctx.arc(x + 2, y, 8, -0.9, 0.9); ctx.stroke();
+    } else {
+      ctx.beginPath();
+      ctx.moveTo(x + 4, y - 4); ctx.lineTo(x + 10, y + 4);
+      ctx.moveTo(x + 10, y - 4); ctx.lineTo(x + 4, y + 4);
+      ctx.stroke();
+    }
+  }
+
+  function drawCursor() {
+    if (!Input.active || World.player.dead) return;
+    ctx.strokeStyle = 'rgba(255,255,255,0.25)'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.arc(Input.x, Input.y, 6, 0, Math.PI * 2); ctx.stroke();
+  }
+
+  // ===========================================================================
+  // Loop — fixed 60fps step scaled by World.timeScale. No delta time anywhere.
+  // ===========================================================================
+  function loop() { update(); draw(); drawCursor(); requestAnimationFrame(loop); }
+
+  resize();
+  layoutBurstButton();
+  World.init();
+  Input.x = viewW / 2; Input.y = viewH / 2;
+  loop();
+})();
+</script>
+</body>
+</html>

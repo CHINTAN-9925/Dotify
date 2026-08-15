@@ -1,0 +1,9 @@
+{
+  "name": "Split.io",
+  "short_name": "Split",
+  "start_url": "/",
+  "display": "fullscreen",
+  "background_color": "#0d0d12",
+  "theme_color": "#0d0d12",
+  "orientation": "any"
+}

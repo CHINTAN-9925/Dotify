@@ -1,0 +1,45 @@
+export const PROTOCOL_VERSION = 1;
+export const CONFIG_VERSION = '2026.08.1';
+
+/** All authoritative values use seconds and world pixels, never render frames. */
+export const GAME_CONFIG = Object.freeze({
+  tickRate: 30,
+  patchRate: 15,
+  worldSize: 3200,
+  arenaPopulation: 24,
+  reconnectSeconds: 10,
+  checkpointSeconds: 60,
+  foodCount: 520,
+  foodRadius: 6,
+  foodMass: 1.2,
+  clusterCount: 22,
+  clusterRadius: 260,
+  startMass: 24,
+  massToRadius: 2.4,
+  baseSpeed: 216,
+  speedFalloff: 0.35,
+  eatRatio: 1.15,
+  burstCost: 0.12,
+  burstMinMass: 30,
+  burstCooldownSeconds: 5,
+  burstFragments: 10,
+  fragmentRadius: 5,
+  fragmentSpeed: 540,
+  fragmentLifeSeconds: 70 / 60,
+  fragmentCap: 900,
+  fragmentFromFood: 1,
+  fragmentFromBlob: 3,
+  chainLifeDecay: 0.8,
+  chainSpeedDecay: 0.96,
+  crackPerRoot: 3,
+  crackMax: 12,
+  crackResetSeconds: 1.5,
+  shatterYield: 0.7,
+  spatialCellSize: 128,
+  palette: ['#ff3b6b', '#ffb028', '#3ddc84', '#31c4ff', '#b06bff', '#ff6bd6'] as readonly string[],
+  playerColor: '#ffffff',
+  primeColor: '#ffd83b',
+  background: '#0d0d12'
+});
+
+export type GameConfig = typeof GAME_CONFIG;

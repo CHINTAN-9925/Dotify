@@ -1,0 +1,27 @@
+{
+  "name": "splitio",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "pnpm@10.15.0",
+  "engines": { "node": ">=24 <25" },
+  "workspaces": ["packages/*", "apps/*"],
+  "scripts": {
+    "dev": "concurrently -n server,client -c magenta,cyan \"npm run dev -w @split/server\" \"npm run dev -w @split/client\"",
+    "build": "tsc -b && pnpm --filter @split/client build",
+    "typecheck": "tsc -b --pretty false",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "clean": "tsc -b --clean",
+    "lint": "eslint ."
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.35.0",
+    "@types/node": "^24.3.0",
+    "concurrently": "^9.2.1",
+    "eslint": "^9.35.0",
+    "typescript": "^5.9.2",
+    "typescript-eslint": "^8.42.0",
+    "vitest": "^3.2.4"
+  },
+  "pnpm": { "onlyBuiltDependencies": ["esbuild", "msgpackr-extract"] }
+}

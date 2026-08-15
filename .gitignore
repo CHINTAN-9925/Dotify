@@ -1,0 +1,12 @@
+node_modules/
+dist/
+dist-types/
+coverage/
+.env
+.env.*
+!.env.example
+.DS_Store
+apps/client/android/
+apps/client/ios/
+*.tsbuildinfo
+.colyseus-cloud.json

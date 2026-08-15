@@ -1,0 +1,16 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "rootDir": "src",
+    "outDir": "dist",
+    "experimentalDecorators": true,
+    "useDefineForClassFields": false
+  },
+  "references": [
+    { "path": "../../packages/config" },
+    { "path": "../../packages/protocol" },
+    { "path": "../../packages/simulation" }
+  ],
+  "include": ["src"]
+}

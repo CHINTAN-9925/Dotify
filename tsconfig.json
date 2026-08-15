@@ -1,0 +1,10 @@
+{
+  "files": [],
+  "references": [
+    { "path": "./packages/config" },
+    { "path": "./packages/protocol" },
+    { "path": "./packages/simulation" },
+    { "path": "./apps/server" },
+    { "path": "./apps/client" }
+  ]
+}

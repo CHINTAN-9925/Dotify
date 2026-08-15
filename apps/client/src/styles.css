@@ -1,0 +1,17 @@
+:root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, sans-serif; background: #0d0d12; }
+* { box-sizing: border-box; }
+html, body, #root, main, .game { width: 100%; height: 100%; margin: 0; overflow: hidden; }
+body { overscroll-behavior: none; -webkit-tap-highlight-color: transparent; }
+canvas { display: block; touch-action: none; }
+.hud { position: fixed; inset: 0; pointer-events: none; padding: max(18px, env(safe-area-inset-top)) max(20px, env(safe-area-inset-right)) max(20px, env(safe-area-inset-bottom)) max(20px, env(safe-area-inset-left)); }
+.mass { display: flex; flex-direction: column; gap: 2px; }
+.mass strong { font-size: 34px; line-height: 1; }
+.mass span, .chain span { color: rgba(255,255,255,.45); font-size: 12px; letter-spacing: .08em; }
+.chain { position: absolute; top: max(18px, env(safe-area-inset-top)); left: 50%; transform: translateX(-50%); display: flex; flex-direction: column; align-items: center; }
+.chain strong { font-size: 52px; line-height: 1; }
+.status { position: absolute; right: 20px; top: max(20px, env(safe-area-inset-top)); color: #ff6b86; font-size: 12px; }
+.status.online { color: #3ddc84; }
+.burst { pointer-events: auto; position: absolute; right: max(24px, env(safe-area-inset-right)); bottom: max(24px, env(safe-area-inset-bottom)); width: 88px; height: 88px; border-radius: 50%; border: 2px solid #31c4ff; color: #31c4ff; background: rgba(49,196,255,.14); display: flex; flex-direction: column; align-items: center; justify-content: center; touch-action: manipulation; }
+.burst:disabled { border-color: rgba(255,255,255,.25); color: rgba(255,255,255,.35); background: rgba(255,255,255,.05); }
+.burst span { font-size: 10px; margin-top: 3px; }
+@media (prefers-reduced-motion: reduce) { .chain { transition: none; } }
