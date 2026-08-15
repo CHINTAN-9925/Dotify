@@ -4,10 +4,6 @@ import type { GameEvent, PlayerInput } from '@split/protocol';
 import { GameConnection } from './network';
 import type { WireAftershock, WireBlob, WireFood, WirePrime } from './types';
 
-interface VisualParticle {
-  x: number; y: number; vx: number; vy: number; life: number; maxLife: number; color: string;
-}
-
 interface VisualBlob {
   source: WireBlob;
   x: number; y: number; targetX: number; targetY: number;
@@ -36,7 +32,6 @@ export class SplitGame {
   private readonly scene = new Graphics();
   private readonly labels = new Container();
   private readonly connection = new GameConnection();
-  private readonly particles: VisualParticle[] = [];
   private readonly visualBlobs = new Map<string, VisualBlob>();
   private readonly visualFood = new Map<number, VisualFood>();
   private readonly visualPrimes = new Map<number, VisualPrime>();
@@ -96,7 +91,6 @@ export class SplitGame {
     const player = this.visualBlobs.get(this.connection.playerId);
     if (!player) return;
     this.sendInput();
-    this.updateParticles(safeDt);
     this.updateRings(safeDt);
     this.draw(player);
   }
@@ -184,15 +178,6 @@ export class SplitGame {
         label.text = blob.name; label.style.fontSize = Math.min(18, radius * 0.45);
         label.alpha = visual.alpha; label.position.set(x, y); label.visible = true;
       }
-    }
-    for (const particle of this.particles) {
-      const alpha = Math.max(0, particle.life / particle.maxLife);
-      const x = sx(particle.x), y = sy(particle.y);
-      const tailX = sx(particle.x - particle.vx * 0.045), tailY = sy(particle.y - particle.vy * 0.045);
-      // Fragments read as moving sparks, not food that suddenly appeared.
-      this.scene.moveTo(tailX, tailY).lineTo(x, y).stroke({ color: particle.color, alpha: alpha * 0.42, width: Math.max(1.5, 3 * zoom) });
-      this.scene.circle(x, y, Math.max(2, GAME_CONFIG.fragmentRadius * zoom * 0.72)).fill({ color: particle.color, alpha });
-      this.scene.circle(x, y, Math.max(3, GAME_CONFIG.fragmentRadius * zoom)).stroke({ color: 0xffffff, alpha: alpha * 0.35, width: 1 });
     }
     for (const ring of this.rings) {
       const progress = 1 - ring.life / ring.maxLife;
@@ -307,14 +292,6 @@ export class SplitGame {
     }
   }
 
-  private updateParticles(dt: number): void {
-    for (let i = this.particles.length - 1; i >= 0; i--) {
-      const p = this.particles[i]; if (!p) continue;
-      p.x += p.vx * dt; p.y += p.vy * dt; p.life -= dt;
-      if (p.life <= 0) this.particles.splice(i, 1);
-    }
-  }
-
   private updateRings(dt: number): void {
     for (let i = this.rings.length - 1; i >= 0; i--) {
       const ring = this.rings[i]; if (!ring) continue;
@@ -329,19 +306,19 @@ export class SplitGame {
       return;
     }
     if (event.type !== 'burst' && event.type !== 'foodPopped' && event.type !== 'blobShattered' && event.type !== 'primeDetonated') return;
-    const count = event.type === 'burst' || event.type === 'primeDetonated' ? event.count : event.type === 'blobShattered' ? 3 : 1;
     if (event.type === 'primeDetonated') {
       this.cameraKick = Math.max(this.cameraKick, 13);
       this.rings.push({ x: event.x, y: event.y, life: 1, maxLife: 1, startRadius: GAME_CONFIG.primeRadius, endRadius: 260, color: event.color });
       this.banner = event.ownerId === this.connection.playerId ? 'PRIME CHAIN +3' : event.neutral ? 'PRIME ERUPTION' : 'PRIME CLAIMED';
       this.bannerLife = 1.8;
+      return;
     }
-    let state = event.seed >>> 0;
-    const random = () => { state += 0x6d2b79f5; let t = state; t = Math.imul(t ^ t >>> 15, t | 1); t ^= t + Math.imul(t ^ t >>> 7, t | 61); return ((t ^ t >>> 14) >>> 0) / 4294967296; };
-    const offset = random() * Math.PI * 2;
-    for (let i = 0; i < count; i++) {
-      const angle = offset + i * Math.PI * 2 / count;
-      this.particles.push({ x: event.x, y: event.y, vx: Math.cos(angle) * GAME_CONFIG.fragmentSpeed, vy: Math.sin(angle) * GAME_CONFIG.fragmentSpeed, life: GAME_CONFIG.fragmentLifeSeconds, maxLife: GAME_CONFIG.fragmentLifeSeconds, color: event.color });
+    if (event.type === 'burst') {
+      this.rings.push({ x: event.x, y: event.y, life: 0.38, maxLife: 0.38, startRadius: 12, endRadius: 105, color: event.color });
+    } else if (event.type === 'foodPopped') {
+      this.rings.push({ x: event.x, y: event.y, life: 0.22, maxLife: 0.22, startRadius: 4, endRadius: 26, color: event.color });
+    } else {
+      this.rings.push({ x: event.x, y: event.y, life: 0.5, maxLife: 0.5, startRadius: 18, endRadius: 90, color: event.color });
     }
   }
 
