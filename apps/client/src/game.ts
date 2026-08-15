@@ -45,6 +45,7 @@ export class SplitGame {
   private readonly primeLabels = new Map<number, Text>();
   private readonly rings: VisualRing[] = [];
   private pointerX = 0; private pointerY = 0; private sequence = 0;
+  private hasPointerIntent = false;
   private burstQueued = false; private lastSend = 0; private bestChain = 0;
   private renderTime = 0; private cameraKick = 0; private banner = ''; private bannerLife = 0;
   private status = 'starting'; private destroyed = false; private initialized = false;
@@ -57,6 +58,8 @@ export class SplitGame {
       return;
     }
     host.appendChild(this.app.canvas);
+    this.pointerX = this.app.screen.width / 2;
+    this.pointerY = this.app.screen.height / 2;
     this.app.stage.addChild(this.worldLayer);
     this.worldLayer.addChild(this.scene, this.labels);
     this.connection.onEvent = event => this.handleEvent(event);
@@ -105,7 +108,8 @@ export class SplitGame {
     const now = performance.now();
     if (now - this.lastSend < 50 && !this.burstQueued) return;
     const centerX = this.app.screen.width / 2, centerY = this.app.screen.height / 2;
-    const dx = this.pointerX - centerX, dy = this.pointerY - centerY;
+    const dx = this.hasPointerIntent ? this.pointerX - centerX : 0;
+    const dy = this.hasPointerIntent ? this.pointerY - centerY : 0;
     const length = Math.hypot(dx, dy);
     const input: PlayerInput = {
       protocolVersion: PROTOCOL_VERSION,
@@ -153,7 +157,12 @@ export class SplitGame {
       this.scene.circle(x, y, radius * 0.48).fill({ color: 0xffffff, alpha: visual.alpha * 0.76 });
       const progress = prime.armed ? Math.max(0, prime.fuse / GAME_CONFIG.primeFuseSeconds) : prime.charge / GAME_CONFIG.primeChargeRequired;
       if (progress > 0) {
-        this.scene.arc(x, y, radius + 9, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * progress).stroke({ color: prime.armed ? 0xff6b4a : GAME_CONFIG.primeColor, alpha: visual.alpha, width: prime.armed ? 5 : 3 });
+        const arcRadius = radius + 9, arcStart = -Math.PI / 2;
+        // Pixi arcs continue the current graphics path unless positioned at
+        // their start, which otherwise creates a long stray connector line.
+        this.scene.moveTo(x + Math.cos(arcStart) * arcRadius, y + Math.sin(arcStart) * arcRadius)
+          .arc(x, y, arcRadius, arcStart, arcStart + Math.PI * 2 * progress)
+          .stroke({ color: prime.armed ? 0xff6b4a : GAME_CONFIG.primeColor, alpha: visual.alpha, width: prime.armed ? 5 : 3 });
       }
       if (prime.armed) {
         this.scene.circle(x, y, radius + 16 + Math.sin(this.renderTime * 12) * 4).stroke({ color: 0xff6b4a, alpha: visual.alpha * 0.8, width: 3 });
@@ -366,9 +375,15 @@ export class SplitGame {
   }
 
   private installInput(canvas: HTMLCanvasElement): void {
-    const update = (event: PointerEvent) => { this.pointerX = event.clientX; this.pointerY = event.clientY; };
+    const update = (event: PointerEvent) => {
+      this.pointerX = event.clientX; this.pointerY = event.clientY;
+      this.hasPointerIntent = true;
+    };
     canvas.addEventListener('pointerdown', event => { canvas.setPointerCapture(event.pointerId); update(event); });
     canvas.addEventListener('pointermove', update);
+    canvas.addEventListener('pointerup', event => { if (event.pointerType !== 'mouse') this.hasPointerIntent = false; });
+    canvas.addEventListener('pointerleave', event => { if (event.pointerType === 'mouse') this.hasPointerIntent = false; });
+    window.addEventListener('blur', () => { this.hasPointerIntent = false; });
     window.addEventListener('keydown', event => { if (event.code === 'Space') { event.preventDefault(); this.queueBurst(); } });
   }
 }
