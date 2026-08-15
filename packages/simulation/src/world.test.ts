@@ -114,4 +114,27 @@ describe('authoritative simulation', () => {
     expect(prime.clusterId).not.toBe(originalCluster);
     expect(prime.cooldown).toBe(0);
   });
+
+  it('does not create random bot bursts without an armed Prime objective', () => {
+    const world = new SimulationWorld(41);
+    const bot = world.addBot('bot-1');
+    bot.mass = 100;
+    for (const prime of world.primes) prime.cooldown = 1_000;
+    for (let i = 0; i < 300; i++) world.step();
+    expect(world.drainEvents().some(event => event.type === 'burst')).toBe(false);
+  });
+
+  it('lets a nearby bot deliberately contest an armed Prime', () => {
+    const world = new SimulationWorld(43);
+    const bot = world.addBot('bot-1');
+    const prime = world.primes[0];
+    if (!prime) throw new Error('missing prime');
+    bot.mass = 100; bot.x = prime.x; bot.y = prime.y;
+    prime.armed = true; prime.charge = world.config.primeChargeRequired; prime.fuse = world.config.primeFuseSeconds;
+    world.tick = 89;
+    world.step();
+    const events = world.drainEvents();
+    expect(events.some(event => event.type === 'burst' && event.ownerId === bot.id)).toBe(true);
+    expect(events.some(event => event.type === 'primeDetonated' && event.ownerId === bot.id)).toBe(true);
+  });
 });

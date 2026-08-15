@@ -218,9 +218,19 @@ export class SimulationWorld {
     for (const blob of this.blobs.values()) {
       if (blob.dead) continue;
       if (blob.kind === 'bot' && this.tick % 90 === 0) {
-        blob.directionX = this.rng.range(-1, 1);
-        blob.directionY = this.rng.range(-1, 1);
-        if (this.rng.next() < 0.08) this.burst(blob);
+        const armedPrime = this.nearestArmedPrime(blob.x, blob.y);
+        if (armedPrime) {
+          const dx = armedPrime.x - blob.x, dy = armedPrime.y - blob.y;
+          const distance = Math.hypot(dx, dy);
+          blob.directionX = distance > 0 ? dx / distance : 0;
+          blob.directionY = distance > 0 ? dy / distance : 0;
+          // Bot bursts now have a readable cause: contesting an armed Prime.
+          // They no longer create unprompted roaming fragments around the arena.
+          if (distance <= blob.radius + armedPrime.radius + 50) this.burst(blob);
+        } else {
+          blob.directionX = this.rng.range(-1, 1);
+          blob.directionY = this.rng.range(-1, 1);
+        }
       }
       const length = Math.hypot(blob.directionX, blob.directionY);
       const speed = this.config.baseSpeed * Math.pow(this.config.startMass / blob.mass, this.config.speedFalloff);
@@ -242,6 +252,17 @@ export class SimulationWorld {
     this.foodGrid.clear(); this.blobGrid.clear();
     for (const food of this.food.values()) this.foodGrid.insert(food);
     for (const blob of this.blobs.values()) if (!blob.dead) this.blobGrid.insert(blob);
+  }
+
+  private nearestArmedPrime(x: number, y: number): PrimeCore | undefined {
+    let nearest: PrimeCore | undefined;
+    let nearestDistance = Number.POSITIVE_INFINITY;
+    for (const prime of this.primes) {
+      if (!prime.armed) continue;
+      const distance = (prime.x - x) ** 2 + (prime.y - y) ** 2;
+      if (distance < nearestDistance) { nearest = prime; nearestDistance = distance; }
+    }
+    return nearest;
   }
 
   private consumeFood(): void {
