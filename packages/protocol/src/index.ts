@@ -27,6 +27,8 @@ export type GameEvent =
   | { type: 'foodPopped'; id: number; tick: number; ownerId: string; foodId: number; x: number; y: number; color: string; seed: number }
   | { type: 'blobCracked'; id: number; tick: number; ownerId: string; targetId: string; x: number; y: number; cracks: number; hitsToPop: number }
   | { type: 'blobShattered'; id: number; tick: number; ownerId: string; targetId: string; x: number; y: number; color: string; seed: number }
+  | { type: 'primeArmed'; id: number; tick: number; primeId: number; x: number; y: number }
+  | { type: 'primeDetonated'; id: number; tick: number; primeId: number; ownerId: string | null; x: number; y: number; color: string; seed: number; count: number; neutral: boolean }
   | { type: 'playerDied'; id: number; tick: number; playerId: string; cause: 'eaten' | 'shattered' }
   | { type: 'upgradeRequired'; id: number; tick: number; requiredVersion: number };
 

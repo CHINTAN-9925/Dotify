@@ -5,9 +5,14 @@ export interface WireBlob {
   cooldown: number; chain: number; lastProcessedSequence: number; dead: boolean;
 }
 
-export interface WireFood { id: number; x: number; y: number; color: string }
+export interface WireFood { id: number; clusterId: number; x: number; y: number; color: string }
+export interface WirePrime {
+  id: number; clusterId: number; x: number; y: number; radius: number;
+  charge: number; armed: boolean; fuse: number; cooldown: number;
+}
 export interface ArenaWireState {
   tick: number; configVersion: string; seed: number;
   blobs: Map<string, WireBlob>;
   food: WireFood[];
+  primes: WirePrime[];
 }

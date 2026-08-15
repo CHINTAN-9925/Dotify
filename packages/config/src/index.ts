@@ -1,5 +1,5 @@
-export const PROTOCOL_VERSION = 1;
-export const CONFIG_VERSION = '2026.08.1';
+export const PROTOCOL_VERSION = 2;
+export const CONFIG_VERSION = '2026.08.2';
 
 /** All authoritative values use seconds and world pixels, never render frames. */
 export const GAME_CONFIG = Object.freeze({
@@ -14,6 +14,13 @@ export const GAME_CONFIG = Object.freeze({
   foodMass: 1.2,
   clusterCount: 22,
   clusterRadius: 260,
+  primeCount: 3,
+  primeRadius: 26,
+  primeChargeRequired: 18,
+  primeFuseSeconds: 8,
+  primeCooldownSeconds: 12,
+  primeFragments: 24,
+  primeChainBonus: 3,
   startMass: 24,
   massToRadius: 2.4,
   baseSpeed: 216,

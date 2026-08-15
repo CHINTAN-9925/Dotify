@@ -41,6 +41,18 @@ pnpm test
 pnpm build
 ```
 
+## Prime Hotspots
+
+Three gold Prime Cores occupy food-cluster centers and create shared objectives across the arena:
+
+- Eating or chain-popping food in a Prime's cluster adds one shared charge.
+- At 18 charges, the Prime arms for eight seconds and becomes vulnerable to fragments.
+- The first fragment to touch it claims a 24-fragment gold detonation and gains `+3` chain.
+- An unclaimed Prime erupts neutrally when its fuse expires.
+- The spent core fades out for 12 seconds, then relocates to a different unoccupied cluster.
+
+Charge arcs, armed countdowns, warning rings, a minimap, shockwaves, camera kick, and event banners make the objective readable without changing the server-authoritative rules.
+
 ## Mobile
 
 After the web build succeeds:
@@ -74,4 +86,4 @@ Native platform directories are generated artifacts and intentionally ignored un
 
 ## Remaining release work
 
-This repository establishes the production vertical slice. Before public release, complete the prime/orb/audio parity pass, add generated schema client types, implement cosmetics/profile screens, add Sentry and analytics environment integrations, run device QA, and create signed App Store/Play Store projects.
+This repository establishes the production vertical slice. Before public release, complete the audio and haptics pass, add generated schema client types, implement cosmetics/profile screens, add Sentry and analytics environment integrations, run device QA, and create signed App Store/Play Store projects.

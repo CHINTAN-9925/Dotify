@@ -1,5 +1,5 @@
 import { ArraySchema, MapSchema, Schema, type } from '@colyseus/schema';
-import type { Blob, Food, SimulationWorld } from '@split/simulation';
+import type { Blob, Food, PrimeCore, SimulationWorld } from '@split/simulation';
 
 export class BlobSchema extends Schema {
   @type('string') id = '';
@@ -21,9 +21,22 @@ export class BlobSchema extends Schema {
 
 export class FoodSchema extends Schema {
   @type('uint32') id = 0;
+  @type('uint8') clusterId = 0;
   @type('number') x = 0;
   @type('number') y = 0;
   @type('string') color = '';
+}
+
+export class PrimeSchema extends Schema {
+  @type('uint8') id = 0;
+  @type('uint8') clusterId = 0;
+  @type('number') x = 0;
+  @type('number') y = 0;
+  @type('number') radius = 0;
+  @type('number') charge = 0;
+  @type('boolean') armed = false;
+  @type('number') fuse = 0;
+  @type('number') cooldown = 0;
 }
 
 export class ArenaState extends Schema {
@@ -32,6 +45,7 @@ export class ArenaState extends Schema {
   @type('uint32') seed = 0;
   @type({ map: BlobSchema }) blobs = new MapSchema<BlobSchema>();
   @type([FoodSchema]) food = new ArraySchema<FoodSchema>();
+  @type([PrimeSchema]) primes = new ArraySchema<PrimeSchema>();
 }
 
 function copyBlob(source: Blob, target: BlobSchema): void {
@@ -61,10 +75,25 @@ export function syncState(world: SimulationWorld, state: ArenaState): void {
   for (const food of world.food.values()) {
     if (!known.has(food.id)) state.food.push(toFoodSchema(food));
   }
+
+
+  while (state.primes.length < world.primes.length) state.primes.push(new PrimeSchema());
+  while (state.primes.length > world.primes.length) state.primes.pop();
+  world.primes.forEach((prime, index) => {
+    const target = state.primes[index];
+    if (target) copyPrime(prime, target);
+  });
 }
 
 function toFoodSchema(food: Food): FoodSchema {
   const result = new FoodSchema();
-  result.id = food.id; result.x = food.x; result.y = food.y; result.color = food.color;
+  result.id = food.id; result.clusterId = food.clusterId; result.x = food.x; result.y = food.y; result.color = food.color;
   return result;
+}
+
+function copyPrime(source: PrimeCore, target: PrimeSchema): void {
+  target.id = source.id; target.clusterId = source.clusterId;
+  target.x = source.x; target.y = source.y; target.radius = source.radius;
+  target.charge = source.charge; target.armed = source.armed;
+  target.fuse = source.fuse; target.cooldown = source.cooldown;
 }

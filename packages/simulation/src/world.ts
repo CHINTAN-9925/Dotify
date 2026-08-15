@@ -17,10 +17,15 @@ export interface Blob {
 }
 
 export interface Food {
-  id: number; x: number; y: number; radius: number; mass: number; color: string;
+  id: number; clusterId: number; x: number; y: number; radius: number; mass: number; color: string;
 }
 
 export interface FoodCluster { x: number; y: number }
+
+export interface PrimeCore {
+  id: number; clusterId: number; x: number; y: number; radius: number;
+  charge: number; armed: boolean; fuse: number; cooldown: number;
+}
 
 interface Fragment {
   id: number; x: number; y: number; vx: number; vy: number;
@@ -32,6 +37,7 @@ export interface WorldSnapshot {
   tick: number;
   blobs: readonly Blob[];
   food: readonly Food[];
+  primes: readonly PrimeCore[];
   fragmentCount: number;
 }
 
@@ -41,6 +47,7 @@ export class SimulationWorld {
   readonly blobs = new Map<string, Blob>();
   readonly food = new Map<number, Food>();
   readonly clusters: FoodCluster[] = [];
+  readonly primes: PrimeCore[] = [];
   readonly events: GameEvent[] = [];
   readonly seed: number;
   tick = 0;
@@ -58,6 +65,7 @@ export class SimulationWorld {
     this.foodGrid = new SpatialHash(config.spatialCellSize);
     this.blobGrid = new SpatialHash(config.spatialCellSize);
     this.generateClusters();
+    this.generatePrimes();
     this.spawnFood(config.foodCount);
   }
 
@@ -106,11 +114,12 @@ export class SimulationWorld {
     this.rebuildSpatialIndexes();
     this.consumeFood();
     this.consumeBlobs();
+    this.updatePrimes(dt);
     this.updateFragments(dt);
   }
 
   snapshot(): WorldSnapshot {
-    return { tick: this.tick, blobs: [...this.blobs.values()], food: [...this.food.values()], fragmentCount: this.fragments.length };
+    return { tick: this.tick, blobs: [...this.blobs.values()], food: [...this.food.values()], primes: this.primes, fragmentCount: this.fragments.length };
   }
 
   private makeBlob(id: string, kind: Blob['kind'], name: string, color: string): Blob {
@@ -128,9 +137,10 @@ export class SimulationWorld {
 
   private spawnFood(count: number): void {
     for (let i = 0; i < count; i++) {
-      let x = 0, y = 0, foundSafePosition = false;
+      let x = 0, y = 0, clusterId = 0, foundSafePosition = false;
       for (let attempt = 0; attempt < 24; attempt++) {
-        const cluster = this.clusters[this.rng.integer(0, this.clusters.length)];
+        clusterId = this.rng.integer(0, this.clusters.length);
+        const cluster = this.clusters[clusterId];
         if (!cluster) break;
         const angle = this.rng.range(0, Math.PI * 2);
         // Exponent > 1 intentionally concentrates food near the hotspot core.
@@ -147,6 +157,7 @@ export class SimulationWorld {
       const id = this.nextEntityId++;
       this.food.set(id, {
         id,
+        clusterId,
         x,
         y,
         radius: this.config.foodRadius,
@@ -173,6 +184,21 @@ export class SimulationWorld {
         if (separated) break;
       }
       this.clusters.push(candidate);
+    }
+  }
+
+  private generatePrimes(): void {
+    const available = this.clusters.map((_, index) => index);
+    for (let id = 0; id < Math.min(this.config.primeCount, available.length); id++) {
+      const pick = this.rng.integer(0, available.length);
+      const clusterId = available.splice(pick, 1)[0];
+      if (clusterId === undefined) continue;
+      const cluster = this.clusters[clusterId];
+      if (!cluster) continue;
+      this.primes.push({
+        id, clusterId, x: cluster.x, y: cluster.y, radius: this.config.primeRadius,
+        charge: 0, armed: false, fuse: 0, cooldown: 0
+      });
     }
   }
 
@@ -227,6 +253,7 @@ export class SimulationWorld {
         if (dx * dx + dy * dy < blob.radius * blob.radius) {
           blob.mass += food.mass;
           this.food.delete(food.id);
+          this.chargePrime(food.clusterId);
         }
       }
     }
@@ -256,6 +283,63 @@ export class SimulationWorld {
     const seed = this.rng.integer(0, 0x7fffffff);
     this.events.push({ type: 'burst', id: this.nextEventId++, tick: this.tick, ownerId: blob.id, x: blob.x, y: blob.y, color: blob.color, seed, count: this.config.burstFragments });
     this.spawnFragments(blob.x, blob.y, this.config.burstFragments, blob.color, this.config.fragmentSpeed, this.config.fragmentLifeSeconds, blob.id, seed);
+  }
+
+  private chargePrime(clusterId: number): void {
+    const prime = this.primes.find(candidate => candidate.clusterId === clusterId);
+    if (!prime || prime.armed || prime.cooldown > 0) return;
+    prime.charge = Math.min(this.config.primeChargeRequired, prime.charge + 1);
+    if (prime.charge < this.config.primeChargeRequired) return;
+    prime.armed = true;
+    prime.fuse = this.config.primeFuseSeconds;
+    this.events.push({ type: 'primeArmed', id: this.nextEventId++, tick: this.tick, primeId: prime.id, x: prime.x, y: prime.y });
+  }
+
+  private updatePrimes(dt: number): void {
+    for (const prime of this.primes) {
+      if (prime.armed) {
+        prime.fuse = Math.max(0, prime.fuse - dt);
+        if (prime.fuse === 0) this.detonatePrime(prime, null);
+        continue;
+      }
+      if (prime.cooldown <= 0) continue;
+      prime.cooldown = Math.max(0, prime.cooldown - dt);
+      if (prime.cooldown === 0) this.relocatePrime(prime);
+    }
+  }
+
+  private detonatePrime(prime: PrimeCore, ownerId: string | null): void {
+    if (!prime.armed) return;
+    const seed = this.rng.integer(0, 0x7fffffff);
+    prime.armed = false;
+    prime.fuse = 0;
+    prime.charge = 0;
+    prime.cooldown = this.config.primeCooldownSeconds;
+    const owner = ownerId ? this.blobs.get(ownerId) : undefined;
+    if (owner && !owner.dead) owner.chain += this.config.primeChainBonus;
+    this.events.push({
+      type: 'primeDetonated', id: this.nextEventId++, tick: this.tick,
+      primeId: prime.id, ownerId, x: prime.x, y: prime.y,
+      color: this.config.primeColor, seed, count: this.config.primeFragments,
+      neutral: ownerId === null
+    });
+    this.spawnFragments(
+      prime.x, prime.y, this.config.primeFragments, this.config.primeColor,
+      this.config.fragmentSpeed, this.config.fragmentLifeSeconds, ownerId ?? '', seed
+    );
+  }
+
+  private relocatePrime(prime: PrimeCore): void {
+    const occupied = new Set(this.primes.filter(candidate => candidate !== prime).map(candidate => candidate.clusterId));
+    const candidates = this.clusters
+      .map((_, index) => index)
+      .filter(index => index !== prime.clusterId && !occupied.has(index));
+    const clusterId = candidates[this.rng.integer(0, candidates.length)];
+    const cluster = clusterId === undefined ? undefined : this.clusters[clusterId];
+    if (!cluster || clusterId === undefined) return;
+    prime.clusterId = clusterId;
+    prime.x = cluster.x;
+    prime.y = cluster.y;
   }
 
   private spawnFragments(x: number, y: number, count: number, color: string, speed: number, life: number, ownerId: string, seed = this.rng.integer(0, 0x7fffffff)): void {
@@ -291,11 +375,21 @@ export class SimulationWorld {
         const reach = fragment.radius + food.radius;
         if (dx * dx + dy * dy >= reach * reach) continue;
         this.food.delete(food.id);
+        this.chargePrime(food.clusterId);
         const owner = this.blobs.get(fragment.ownerId);
         if (owner && !owner.dead) { owner.mass += food.mass; owner.chain++; }
         const seed = this.rng.integer(0, 0x7fffffff);
         this.events.push({ type: 'foodPopped', id: this.nextEventId++, tick: this.tick, ownerId: fragment.ownerId, foodId: food.id, x: food.x, y: food.y, color: food.color, seed });
         this.spawnFragments(food.x, food.y, this.config.fragmentFromFood, food.color, fragment.speed * this.config.chainSpeedDecay, fragment.maxLife * this.config.chainLifeDecay, fragment.ownerId, seed);
+      }
+
+      for (const prime of this.primes) {
+        if (!prime.armed) continue;
+        const dx = fragment.x - prime.x, dy = fragment.y - prime.y;
+        const reach = fragment.radius + prime.radius;
+        if (dx * dx + dy * dy < reach * reach) {
+          this.detonatePrime(prime, fragment.ownerId || null);
+        }
       }
 
       for (const blob of this.blobGrid.query(fragment.x, fragment.y, fragment.radius + 128)) {
